@@ -37,10 +37,11 @@ class AgentManager:
     """
 
     def __init__(self, ctx_manager: ContextManager, project_path: str,
-                 session_id: str = None):
+                 session_id: str = None, render_mode: str = "terminal"):
         self.ctx = ctx_manager
         self.project_path = project_path
         self.session_id = session_id or f"session_{int(time.time())}"
+        self.render_mode = render_mode          # used by _take_screenshot
         self.iteration = 0
         self.max_iterations = config.MAX_ITERATIONS
         self.paused = False
@@ -49,6 +50,8 @@ class AgentManager:
         self.current_plan = []
         self.current_step = 0
         self.current_goal = ""
+        self._last_stdout = ""                  # cached for terminal render
+        self._last_stderr = ""
 
         # Shared team message bus — all agents can see recent peer outputs
         self.team_bus: list[dict] = []   # [{agent, content, iteration}]
@@ -173,10 +176,11 @@ class AgentManager:
             )
             self._emit("on_message", "SUPERVISOR", supervisor_ok, "assistant")
 
-            # Phase 3: Execute loop
+            # Phase 3: Execute — FULL PIPELINE for every step
+            # PLANNER → CODER → DEBUGGER → SUPERVISOR → WRITE → RUN → VISION → TESTER → AUDITOR
             self._emit("on_message", "SYSTEM",
-                       "Phase 3: Executing plan...", "system")
-            
+                       "Phase 3: Executing plan (full pipeline per step)...", "system")
+
             while self.iteration < self.max_iterations and not self.stopped:
                 if self.paused:
                     time.sleep(0.5)
@@ -186,35 +190,11 @@ class AgentManager:
                 self._emit("on_iteration_start", self.iteration)
                 self._emit_stats()
 
-                # Auditor periodic check (wrapped — missing key must not crash loop)
-                if self.auditor.should_trigger(self.iteration, False):
-                    try:
-                        self._emit("on_message", "SYSTEM",
-                                   "AUDITOR performing periodic review...", "system")
-                        proj_summary = self._scan_project()
-                        audit_res = self.auditor.periodic_review(
-                            proj_summary, "Periodic quality check", self.iteration
-                        )
-                        self._emit("on_message", "AUDITOR",
-                                   f"Verdict: {audit_res['verdict']}\n"
-                                   f"Summary: {audit_res['summary']}",
-                                   "assistant")
-                        if audit_res["verdict"] == "INDEPENDENT_FIX":
-                            self.ctx.add_steering(
-                                self.session_id,
-                                f"AUDITOR SUGGESTS: {audit_res['fix_suggestion']}",
-                                self.iteration,
-                            )
-                    except Exception as audit_err:
-                        self._emit("on_message", "AUDITOR",
-                                   f"[Skipped — {audit_err}]", "system")
-
-                # Check for user steering
+                # ── User steering check ──────────────────────────────────
                 steering = self.ctx.get_pending_steering(self.session_id)
                 if steering:
                     self._emit("on_message", "USER",
                               f"[STEERING] {steering}", "user")
-                    # Supervisor decides how to incorporate steering
                     routing = self._agent_call(
                         self.supervisor,
                         f"User steering received: {steering}\n"
@@ -223,9 +203,8 @@ class AgentManager:
                     )
                     routing_parsed = self.supervisor._parse_routing(routing)
                     self._emit("on_message", "SUPERVISOR",
-                              f"Routing decision: {routing_parsed['action']} — {routing_parsed['reason']}",
+                              f"Routing: {routing_parsed['action']} — {routing_parsed['reason']}",
                               "assistant")
-
                     if routing_parsed.get("action") == "REPLAN":
                         new_plan = self.planner.replan(
                             self._format_plan(self.current_plan),
@@ -233,9 +212,10 @@ class AgentManager:
                             steering
                         )
                         self.current_plan = new_plan
-                        self._emit("on_plan_update", new_plan, self.current_step)
+                        self.current_step = 0
+                        self._emit("on_plan_update", new_plan, 0)
 
-                # Check if plan is complete
+                # ── Check if plan is complete ────────────────────────────
                 if self.current_step >= len(self.current_plan):
                     self._emit("on_message", "SUPERVISOR",
                               "All plan steps completed.", "system")
@@ -243,29 +223,51 @@ class AgentManager:
                     break
 
                 step = self.current_plan[self.current_step]
+                action = step.get("action", "").upper()
                 self._emit("on_message", "SUPERVISOR",
-                    f"Iteration {self.iteration}: Step {self.current_step + 1} "
-                    f"— {step.get('description', 'No description')}",
+                    f"Iter {self.iteration} · Step {self.current_step + 1}/{len(self.current_plan)} "
+                    f"· [{action}] {step.get('description', '')[:100]}",
                     "system")
 
-                # Route to appropriate agent based on step action
-                action = step.get("action", "").upper()
-                
-                if action in ("CREATE", "MODIFY"):
-                    self._handle_code_step(step)
-                elif action == "DELETE":
-                    self._handle_delete_step(step)
-                elif action == "RUN":
-                    should_continue = self._handle_run_step(step)
-                    if not should_continue:
-                        continue  # Fix step was injected
-                elif action in ("TEST", "VERIFY"):
-                    self._handle_verify_step(step)
-                else:
-                    # Unknown action — let supervisor decide
-                    self._emit("on_message", "SUPERVISOR",
-                              f"Unknown action: {action}. Skipping.", "system")
+                # ╔════════════════════════════════════════════════════════╗
+                # ║         FULL PIPELINE — runs for EVERY step          ║
+                # ╚════════════════════════════════════════════════════════╝
 
+                if action == "DELETE":
+                    self._handle_delete_step(step)
+                    self.current_step += 1
+                    self._emit("on_plan_update", self.current_plan, self.current_step)
+                    self._emit_stats()
+                    continue
+
+                # ── 1. CODER: Write or modify code ───────────────────────
+                code_written = False
+                written_file = ""
+                if action in ("CREATE", "MODIFY"):
+                    written_file = self._pipeline_coder(step)
+                    code_written = bool(written_file)
+
+                # ── 2. DEBUGGER: Static analysis on written code ─────────
+                if code_written:
+                    self._pipeline_debugger(written_file)
+
+                # ── 3. RUN: Execute the project ──────────────────────────
+                # Always run if there's an entry file, regardless of step action
+                run_success = False
+                if action == "RUN" or (code_written and self.render_mode != "none"):
+                    run_success = self._pipeline_run(step)
+
+                # ── 4. VISION: Visual audit (ALWAYS — for every render mode) ─
+                self._pipeline_vision(step)
+
+                # ── 5. TESTER: Generate/run tests ────────────────────────
+                if code_written:
+                    self._pipeline_tester(step, written_file)
+
+                # ── 6. AUDITOR: Periodic quality audit ───────────────────
+                self._pipeline_auditor()
+
+                # ── Advance to next step ─────────────────────────────────
                 self.current_step += 1
                 self._emit("on_plan_update", self.current_plan, self.current_step)
                 self._emit_stats()
@@ -280,110 +282,282 @@ class AgentManager:
             self._emit("on_error", str(e))
             self._emit("on_message", "SYSTEM",
                        f"Error in agent loop: {str(e)}", "system")
+            import traceback
+            traceback.print_exc()
         finally:
             self.running = False
 
-    def _handle_code_step(self, step: dict):
-        """Handle a CREATE or MODIFY step. Includes TDD test generation."""
+    # ═════════════════════════════════════════════════════════════════════════════
+    # PIPELINE STAGES — each stage is self-contained, always callable
+    # ═════════════════════════════════════════════════════════════════════════════
+
+    def _pipeline_coder(self, step: dict) -> str:
+        """
+        Stage 1: CODER writes or modifies a file.
+        Returns the filename written, or '' if nothing was written.
+        """
         filename = step.get("file", "")
         description = step.get("description", "")
-        
-        test_context = ""
-        if config.TDD_ENABLED:
-            self._emit("on_message", "SYSTEM", "TESTER generating tests...", "system")
-            current_content = self._read_file(filename) or ""
-            proj_struct = self._scan_project()
-            tests = self.tester.generate_tests(description, filename, current_content, proj_struct)
-            
-            self._emit("on_message", "TESTER", 
-                       f"Generated {tests.get('test_count', 0)} tests in {tests.get('test_file')}\n"
-                       f"Description: {tests.get('description')}", "assistant")
-            
-            if tests.get("test_code"):
-                # Write test file
-                success, diff = self.diff_engine.write_file_safe(tests["test_file"], tests["test_code"])
-                if success:
-                    self._emit("on_file_changed", tests["test_file"], diff)
-                    test_context = f"\nTests to pass:\n{tests['test_code']}"
+        action = step.get("action", "CREATE").upper()
 
-        # Combine description with tests
-        full_desc = description + test_context
-
-        if step["action"] == "CREATE":
-            # Create new file
-            result = self.coder.create_file(full_desc, filename)
+        if action == "CREATE":
+            result = self.coder.create_file(description, filename)
         else:
-            # Modify existing file
             current_content = self._read_file(filename) or ""
-            result = self.coder.implement(full_desc, current_content, filename)
+            result = self.coder.implement(description, current_content, filename)
 
         self._emit("on_message", "CODER",
-                  f"File: {result['filename']}\n"
-                  f"Action: {result['action']}\n"
-                  f"Description: {result['description']}",
-                  "assistant")
+                   f"[{result['action']}] {result['filename']}\n"
+                   f"{result['description'][:200]}",
+                   "assistant")
 
-        # SUPERVISOR reviews before writing (sees CODER + TESTER via team bus)
-        if result["code"]:
-            review = self.supervisor.review_code(
-                result["filename"], result["code"], result["description"],
-                team_context=self._get_bus(8),
+        if not result.get("code"):
+            return ""
+
+        # SUPERVISOR reviews before writing
+        review = self.supervisor.review_code(
+            result["filename"], result["code"], result["description"],
+            team_context=self._get_bus(8),
+        )
+        self._emit("on_message", "SUPERVISOR",
+                   f"Code review: {review['verdict']} — {review['issues'][:200]}",
+                   "assistant")
+
+        if review["verdict"] == "APPROVE":
+            success, diff = self.diff_engine.write_file_safe(
+                result["filename"], result["code"]
             )
-            self._emit("on_message", "SUPERVISOR",
-                       f"Code review: {review['verdict']} — {review['issues']}",
-                       "assistant")
-
-            if review["verdict"] == "APPROVE":
-                # DEBUGGER does static analysis
-                static_issues = self.debugger.static_analysis(
-                    {result["filename"]: result["code"]}
+            if success:
+                self.ctx.save_file_snapshot(
+                    self.session_id, result["filename"],
+                    result["code"], self.iteration
                 )
-                if static_issues:
-                    self._emit("on_message", "DEBUGGER",
-                        f"Static analysis found {len(static_issues)} issues:\n" +
-                        "\n".join(f"  • {i['description']}" for i in static_issues[:5]),
-                        "assistant")
-
-                # Write file regardless (issues are informational)
-                success, diff = self.diff_engine.write_file_safe(
-                    result["filename"], result["code"]
-                )
-                if success:
-                    # Save snapshot to DB
-                    self.ctx.save_file_snapshot(
-                        self.session_id, result["filename"],
-                        result["code"], self.iteration
+                self._emit("on_file_changed", result["filename"], diff)
+                if config.GIT_AUTO_COMMIT:
+                    self.git_manager.commit_iteration(
+                        self.iteration, description, [result["filename"]]
                     )
-                    self._emit("on_file_changed", result["filename"], diff)
-                    
-                    if config.GIT_AUTO_COMMIT:
-                        self.git_manager.commit_iteration(self.iteration, description, [result["filename"]])
-                else:
-                    self._emit("on_message", "SYSTEM",
-                              f"Failed to write file: {diff}", "system")
+                return result["filename"]
             else:
-                self._emit("on_message", "SUPERVISOR",
-                          f"Code rejected. Issues: {review['issues']}",
-                          "system")
-                
-                # AUDITOR check on disagreement
+                self._emit("on_message", "SYSTEM",
+                          f"Failed to write file: {diff}", "system")
+        else:
+            # AUDITOR tiebreak on disagreement
+            self._emit("on_message", "SUPERVISOR",
+                      f"Code rejected: {review['issues'][:200]}", "system")
+            try:
                 if self.auditor.should_trigger(self.iteration, True):
-                    self._emit("on_message", "SYSTEM", "AUDITOR reviewing disagreement...", "system")
+                    self._emit("on_message", "SYSTEM",
+                              "AUDITOR reviewing disagreement...", "system")
                     audit_res = self.auditor.audit_code(
-                        result["filename"], result["code"], review['verdict'], result["description"]
+                        result["filename"], result["code"],
+                        review["verdict"], result["description"]
                     )
-                    self._emit("on_message", "AUDITOR", 
+                    self._emit("on_message", "AUDITOR",
                                f"Verdict: {audit_res['verdict']}\n"
-                               f"Suggestion: {audit_res['fix_suggestion']}", 
+                               f"Suggestion: {audit_res['fix_suggestion'][:200]}",
                                "assistant")
-                    if audit_res['verdict'] == "AGREE_WITH_CODER":
-                        self._emit("on_message", "SYSTEM", "AUDITOR overrules SUPERVISOR. Applying code.", "system")
-                        success, diff = self.diff_engine.write_file_safe(result["filename"], result["code"])
+                    if audit_res["verdict"] == "AGREE_WITH_CODER":
+                        self._emit("on_message", "SYSTEM",
+                                  "AUDITOR overrules SUPERVISOR. Applying code.",
+                                  "system")
+                        success, diff = self.diff_engine.write_file_safe(
+                            result["filename"], result["code"]
+                        )
                         if success:
-                            self.ctx.save_file_snapshot(self.session_id, result["filename"], result["code"], self.iteration)
+                            self.ctx.save_file_snapshot(
+                                self.session_id, result["filename"],
+                                result["code"], self.iteration
+                            )
                             self._emit("on_file_changed", result["filename"], diff)
                             if config.GIT_AUTO_COMMIT:
-                                self.git_manager.commit_iteration(self.iteration, description, [result["filename"]])
+                                self.git_manager.commit_iteration(
+                                    self.iteration, description,
+                                    [result["filename"]]
+                                )
+                            return result["filename"]
+            except Exception as e:
+                self._emit("on_message", "AUDITOR",
+                          f"[Skipped — {e}]", "system")
+        return ""
+
+    def _pipeline_debugger(self, filename: str):
+        """Stage 2: DEBUGGER runs static analysis on the written file."""
+        content = self._read_file(filename) or ""
+        if not content:
+            return
+
+        static_issues = self.debugger.static_analysis({filename: content})
+        if static_issues:
+            issues_text = "\n".join(
+                f"  • {i['description']}" for i in static_issues[:8]
+            )
+            self._emit("on_message", "DEBUGGER",
+                       f"Static analysis — {len(static_issues)} issue(s):\n{issues_text}",
+                       "assistant")
+        else:
+            self._emit("on_message", "DEBUGGER",
+                       "Static analysis: ✓ No issues found.", "assistant")
+
+    def _pipeline_run(self, step: dict) -> bool:
+        """
+        Stage 3: RUN the project entry file and capture output.
+        Returns True if execution succeeded.
+        """
+        entry_file = step.get("file", "main.py")
+
+        self._emit("on_message", "SYSTEM",
+                   f"Running: {entry_file}...", "system")
+
+        success, stdout, stderr, duration_ms = self.executor.run(entry_file)
+
+        # Cache for terminal/esp32 render
+        self._last_stdout = stdout or ""
+        self._last_stderr = stderr or ""
+
+        self.ctx.save_exec_result(
+            self.session_id, self.iteration,
+            0 if success else 1, stdout, stderr, duration_ms
+        )
+        self._emit("on_exec_result", 0 if success else 1, stdout, stderr)
+
+        if success:
+            self._emit("on_message", "SYSTEM",
+                       f"✓ Execution succeeded ({duration_ms}ms)", "system")
+            return True
+        else:
+            self._emit("on_message", "SYSTEM",
+                       f"✗ Execution failed ({duration_ms}ms)", "system")
+
+            # DEBUGGER analyzes the error
+            relevant_files = self._get_error_files(stderr)
+            debug_report = self.debugger.analyze_error(
+                stderr, stdout, relevant_files, self.iteration
+            )
+            self._emit("on_message", "DEBUGGER",
+                       f"Root cause: {debug_report['root_cause']}\n"
+                       f"Fix: {debug_report['fix_description']}",
+                       "assistant")
+
+            # Inject fix as next step
+            fix_step = {
+                "step": self.current_step + 1,
+                "action": "MODIFY",
+                "file": debug_report.get("affected_file", ""),
+                "description": debug_report.get("coder_task",
+                               debug_report.get("fix_description", "")),
+                "depends_on": [],
+                "verify_by": "no runtime error",
+            }
+            self.current_plan.insert(self.current_step + 1, fix_step)
+            self._emit("on_plan_update", self.current_plan, self.current_step)
+            return False
+
+    def _pipeline_vision(self, step: dict):
+        """
+        Stage 4: VISION — visual audit. ALWAYS runs, for ALL render modes.
+        Captures a screenshot/render/terminal image and sends to VISION agent.
+        """
+        self._emit("on_message", "SYSTEM",
+                   "VISION capturing & analyzing output...", "system")
+
+        screenshot_path = self._take_screenshot(render_mode=self.render_mode)
+        if not screenshot_path:
+            self._emit("on_message", "VISION",
+                       "No output to capture — skipping visual audit.", "system")
+            return
+
+        report = self.vision.analyze_frame(
+            screenshot_path,
+            step.get("description", "Expected behavior"),
+            self.iteration
+        )
+        self._emit("on_vision_report", report)
+
+        verdict = report.get("iteration_verdict", "CONTINUE")
+        matches = report.get("matches", "N/A")
+        rec = report.get("recommendation", "")
+        issues = report.get("issues", [])
+
+        msg = (
+            f"Matches expected: {matches} | Verdict: {verdict}\n"
+            f"Issues: {len(issues)}"
+        )
+        if rec:
+            msg += f"\nRecommendation: {rec[:200]}"
+        self._emit("on_message", "VISION", msg, "assistant")
+
+        if verdict == "DONE":
+            self._emit("on_message", "SUPERVISOR",
+                      "VISION confirms goal achieved. Completing.", "system")
+            self.stopped = True
+        elif verdict == "CHANGE_APPROACH":
+            new_plan = self.planner.replan(
+                self._format_plan(self.current_plan),
+                list(range(self.current_step)),
+                rec or "Change approach based on visual analysis"
+            )
+            self.current_plan = new_plan
+            self.current_step = 0
+            self._emit("on_plan_update", new_plan, 0)
+
+    def _pipeline_tester(self, step: dict, filename: str):
+        """Stage 5: TESTER generates and/or runs tests for the written file."""
+        if not config.TDD_ENABLED:
+            return
+
+        description = step.get("description", "")
+        current_content = self._read_file(filename) or ""
+        proj_struct = self._scan_project()
+
+        self._emit("on_message", "SYSTEM",
+                   "TESTER generating tests...", "system")
+
+        tests = self.tester.generate_tests(
+            description, filename, current_content, proj_struct
+        )
+
+        test_count = tests.get("test_count", 0)
+        test_file = tests.get("test_file", "")
+        self._emit("on_message", "TESTER",
+                   f"Generated {test_count} test(s) → {test_file}\n"
+                   f"{tests.get('description', '')}",
+                   "assistant")
+
+        if tests.get("test_code"):
+            success, diff = self.diff_engine.write_file_safe(
+                test_file, tests["test_code"]
+            )
+            if success:
+                self._emit("on_file_changed", test_file, diff)
+
+    def _pipeline_auditor(self):
+        """Stage 6: AUDITOR periodic quality review."""
+        if not self.auditor.should_trigger(self.iteration, False):
+            return
+
+        try:
+            self._emit("on_message", "SYSTEM",
+                       "AUDITOR performing periodic review...", "system")
+            proj_summary = self._scan_project()
+            audit_res = self.auditor.periodic_review(
+                proj_summary, "Periodic quality check", self.iteration
+            )
+            self._emit("on_message", "AUDITOR",
+                       f"Verdict: {audit_res['verdict']}\n"
+                       f"Summary: {audit_res['summary']}",
+                       "assistant")
+            if audit_res["verdict"] == "INDEPENDENT_FIX":
+                self.ctx.add_steering(
+                    self.session_id,
+                    f"AUDITOR SUGGESTS: {audit_res['fix_suggestion']}",
+                    self.iteration,
+                )
+        except Exception as e:
+            self._emit("on_message", "AUDITOR",
+                       f"[Skipped — {e}]", "system")
+
+
 
     def _handle_delete_step(self, step: dict):
         """Handle a DELETE step."""
@@ -419,8 +593,12 @@ class AgentManager:
             0 if success else 1, stdout, stderr, duration_ms
         )
         
+        # Cache stdout/stderr so terminal/esp32 render mode can use them
+        self._last_stdout = stdout or ""
+        self._last_stderr = stderr or ""
+
         self._emit("on_exec_result", 0 if success else 1, stdout, stderr)
-        
+
         if success:
             self._emit("on_message", "SYSTEM",
                        f"Execution succeeded ({duration_ms}ms)", "system")
@@ -455,7 +633,8 @@ class AgentManager:
 
     def _handle_verify_step(self, step: dict):
         """Handle a VERIFY/TEST step using VISION agent."""
-        screenshot_path = self._take_screenshot()
+        # Universal capture — works for web, terminal, desktop, ESP32
+        screenshot_path = self._take_screenshot(render_mode=self.render_mode)
         if screenshot_path:
             report = self.vision.analyze_frame(
                 screenshot_path,
@@ -540,23 +719,141 @@ class AgentManager:
                     files[rel] = content
         return files
 
-    def _take_screenshot(self) -> str:
-        """Take a screenshot of the current project render."""
+    def _take_screenshot(self, render_mode: str = "desktop") -> str:
+        """
+        Universal visual capture — works for ALL render modes.
+        Returns path to a PNG image that VISION can analyze.
+
+        Modes:
+          desktop  → PIL ImageGrab (full-screen capture)
+          web      → render HTML to PNG via playwright/weasyprint, or
+                     capture the FORGE simulator panel canvas
+          terminal → render last stdout as a styled terminal image
+          esp32    → same as terminal (serial/LCD output text)
+          none     → generate a code summary image
+        """
         frames_dir = os.path.join(self.project_path, ".forge", "frames")
         os.makedirs(frames_dir, exist_ok=True)
-        
-        # For now, try to capture desktop screenshot using PIL
+        path = os.path.join(frames_dir, f"frame_{self.iteration:04d}.png")
+
+        # ── 1. Web / HTML render ─────────────────────────────────
+        if render_mode == "web":
+            # Try playwright headless screenshot first
+            if self._capture_web_playwright(path):
+                return path
+            # Fallback: render to image using PIL text
+            self._render_text_to_image(
+                path,
+                f"[Web Render — Iteration {self.iteration}]\n\n"
+                + self._get_html_preview(),
+                "#0D1117", "#58A6FF"
+            )
+            return path
+
+        # ── 2. Terminal / ESP32 / CLI output ────────────────────
+        if render_mode in ("terminal", "esp32"):
+            last_stdout = getattr(self, "_last_stdout", "")
+            last_stderr = getattr(self, "_last_stderr", "")
+            content = (
+                f"[{render_mode.upper()} — Iteration {self.iteration}]\n\n"
+                + (last_stdout[-2000:] if last_stdout else "(no output yet)")
+                + ("\n\n[STDERR]\n" + last_stderr[-500:] if last_stderr else "")
+            )
+            self._render_text_to_image(path, content, "#0D1117", "#4ADE80")
+            return path
+
+        # ── 3. Desktop app → full-screen PIL screenshot ──────────
         try:
             from PIL import ImageGrab
-            screenshot = ImageGrab.grab()
-            path = os.path.join(
-                frames_dir,
-                f"frame_{self.iteration:04d}.png"
-            )
-            screenshot.save(path)
+            img = ImageGrab.grab()
+            img.save(path)
             return path
         except Exception:
-            return ""
+            pass
+
+        # ── 4. Fallback: project structure summary ────────────────
+        summary = (
+            f"[Project State — Iteration {self.iteration}]\n\n"
+            + self._scan_project()[:1500]
+        )
+        self._render_text_to_image(path, summary, "#0D1117", "#A3A3A3")
+        return path
+
+    def _render_text_to_image(self, path: str, text: str,
+                              bg: str = "#0D1117", fg: str = "#4ADE80"):
+        """Render text content to a PNG image for VISION to analyze."""
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+            W, H = 960, 640
+            img = Image.new("RGB", (W, H), color=bg)
+            draw = ImageDraw.Draw(img)
+
+            # Try a monospace font, fall back to default
+            font = None
+            for fname in ("consolas.ttf", "cour.ttf", "DejaVuSansMono.ttf"):
+                try:
+                    font = ImageFont.truetype(fname, 13)
+                    break
+                except Exception:
+                    pass
+            if font is None:
+                font = ImageFont.load_default()
+
+            margin, line_h = 16, 17
+            y = margin
+            for line in text.split("\n"):
+                # Truncate long lines
+                display = line[:115]
+                draw.text((margin, y), display, fill=fg, font=font)
+                y += line_h
+                if y > H - margin:
+                    draw.text((margin, y), "... (truncated)", fill="#666",
+                              font=font)
+                    break
+
+            img.save(path, "PNG")
+            return True
+        except Exception:
+            return False
+
+    def _capture_web_playwright(self, path: str) -> bool:
+        """Try to screenshot the project's HTML using playwright."""
+        # Find the entry HTML file
+        html_candidates = ["index.html", "app.html", "main.html"]
+        html_file = None
+        for candidate in html_candidates:
+            full = os.path.join(self.project_path, candidate)
+            if os.path.exists(full):
+                html_file = full
+                break
+        if not html_file:
+            return False
+
+        try:
+            from playwright.sync_api import sync_playwright
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page(viewport={"width": 960, "height": 640})
+                page.goto(f"file:///{html_file.replace(os.sep, '/')}")
+                page.wait_for_timeout(1500)
+                page.screenshot(path=path, full_page=False)
+                browser.close()
+            return True
+        except Exception:
+            return False
+
+    def _get_html_preview(self) -> str:
+        """Get a text summary of the project's HTML content."""
+        for candidate in ["index.html", "app.html", "main.html"]:
+            full = os.path.join(self.project_path, candidate)
+            if os.path.exists(full):
+                try:
+                    with open(full, encoding="utf-8") as f:
+                        return f.read()[:800]
+                except Exception:
+                    pass
+        return "(no HTML file found)"
+
 
     def _format_plan(self, plan: list[dict]) -> str:
         """Format a plan as readable text."""

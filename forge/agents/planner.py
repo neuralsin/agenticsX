@@ -28,6 +28,13 @@ PLAN:
 
 Actions: CREATE | MODIFY | DELETE | RUN | TEST | VERIFY
 
+MANDATORY RULES:
+- Every RUN step MUST be followed immediately by a VERIFY step.
+- Every VERIFY step triggers the VISION agent to visually audit the output (screenshot/render).
+- If the project produces any visible output (web page, terminal output, GUI, ESP32 display),
+  there MUST be at least one VERIFY step at the end of the plan.
+- Never end a plan without a final VERIFY step unless action is "none" (code-only project).
+
 After each step in the plan, note:
 DEPENDS_ON: [step numbers this depends on, or "none"]
 VERIFY_BY: [how to know this step succeeded]

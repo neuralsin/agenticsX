@@ -103,6 +103,16 @@ IF EXIST "%FORGE_DIR%\.env" (
     ECHO [OK] Loaded .env
 )
 
+:: ── 4b. Kill any stale FORGE process on port 47392 ───────────────────────────
+ECHO [..] Checking for stale FORGE instances...
+FOR /F "tokens=5" %%p IN ('netstat -ano ^| findstr ":47392 " 2^>nul') DO (
+    IF NOT "%%p"=="0" (
+        ECHO [!!] Killing stale FORGE process PID %%p
+        taskkill /F /PID %%p >nul 2>&1
+    )
+)
+timeout /t 1 /nobreak >nul
+
 :: ── 5. Launch FORGE ───────────────────────────────────────────────────────────
 
 ECHO.

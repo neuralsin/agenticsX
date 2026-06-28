@@ -22,58 +22,79 @@ import customtkinter as ctk
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("dark-blue")  # base theme (overridden by our Obsidian config)
 
-# ── Single-instance guard ─────────────────────────────────────────────────────
-import tempfile
-import atexit
+# ── Single-instance guard (socket-based — OS auto-releases on crash) ──────────
+import socket as _socket
 
-_LOCK_FILE = os.path.join(tempfile.gettempdir(), "forge_running.lock")
+_LOCK_PORT   = 47392          # arbitrary port unlikely to be in use
+_lock_socket = None           # kept alive as a module-level reference
 
-def _is_already_running() -> bool:
-    """Return True only if another FORGE instance is genuinely alive."""
-    if not os.path.exists(_LOCK_FILE):
-        return False
+
+def _kill_port_owner():
+    """Kill any process listening on _LOCK_PORT (i.e. a stale FORGE)."""
+    import subprocess, os
     try:
-        with open(_LOCK_FILE, "r") as f:
-            pid = int(f.read().strip())
-        if pid == os.getpid():
-            return False  # It's us (re-entry)
-        import psutil
-        if not psutil.pid_exists(pid):
-            # Stale lock — the process is dead
-            _remove_lock()
-            return False
-        proc = psutil.Process(pid)
-        # Check if the process is actually a Python running FORGE
-        cmdline = " ".join(proc.cmdline()).lower()
-        pname = proc.name().lower()
-        is_forge = ("python" in pname or "forge" in pname) and (
-            "main.py" in cmdline or "forge" in cmdline
+        # Find PID owning the port
+        out = subprocess.check_output(
+            f"netstat -ano | findstr :{_LOCK_PORT}",
+            shell=True, text=True, stderr=subprocess.DEVNULL
         )
-        if not is_forge:
-            # PID got recycled to a non-FORGE process — stale lock
-            _remove_lock()
-            return False
-        return True
+        for line in out.strip().splitlines():
+            parts = line.split()
+            if parts and parts[-1].isdigit():
+                pid = int(parts[-1])
+                if pid != os.getpid():
+                    subprocess.call(
+                        f"taskkill /F /PID {pid}",
+                        shell=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
     except Exception:
-        # Any error (permission denied, zombie, etc.) — assume stale
-        _remove_lock()
+        pass
+    import time as _time
+    _time.sleep(0.5)           # let the OS release the port
+
+
+def _try_bind() -> bool:
+    """Attempt to bind the lock socket. Returns True on success."""
+    global _lock_socket
+    try:
+        s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        s.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 0)
+        s.bind(("127.0.0.1", _LOCK_PORT))
+        s.listen(1)
+        _lock_socket = s
+        return True
+    except OSError:
         return False
 
-def _write_lock():
-    """Write our PID to the lock file."""
-    try:
-        with open(_LOCK_FILE, "w") as f:
-            f.write(str(os.getpid()))
-    except Exception:
-        pass
 
-def _remove_lock():
-    """Remove the lock file on clean exit."""
-    try:
-        if os.path.exists(_LOCK_FILE):
-            os.remove(_LOCK_FILE)
-    except Exception:
-        pass
+def _acquire_lock() -> bool:
+    """
+    Grab the singleton lock.
+    If another FORGE is running, kill it and grab the lock.
+    Returns True when we own the lock, False if something went badly wrong.
+    """
+    if _try_bind():
+        return True                # no other instance — we own it
+    # Another instance is running — kill it, then retry once
+    _kill_port_owner()
+    return _try_bind()
+
+
+def _release_lock():
+    """Close the lock socket on clean exit (crash = OS auto-releases)."""
+    global _lock_socket
+    if _lock_socket:
+        try:
+            _lock_socket.close()
+        except Exception:
+            pass
+        _lock_socket = None
+
+
+
+
 
 
 
@@ -81,26 +102,36 @@ def main():
     """Launch the FORGE application."""
 
     # ── Single-instance guard ─────────────────────────────────────────────
-    if _is_already_running():
-        # Show a small warning instead of a second window
+    # Kills any stale/crashed FORGE on the same port and takes ownership.
+    if not _acquire_lock():
+        # Very unlikely — port couldn't be grabbed even after kill attempt
         import tkinter.messagebox as mb
-        mb.showwarning(
-            "FORGE Already Running",
-            "A FORGE instance is already open.\n"
-            "Close the existing window before starting a new one."
+        mb.showerror(
+            "FORGE — Launch Error",
+            f"Could not acquire lock on port {_LOCK_PORT}.\n"
+            "Try running: taskkill /F /IM python.exe\n"
+            "Then relaunch FORGE."
         )
         return
 
-    _write_lock()
-    atexit.register(_remove_lock)
+    # Register cleanup
+    import atexit
+    atexit.register(_release_lock)
 
-    # Also clean up on signals (Ctrl+C, terminal close, etc.)
+    # Handle Ctrl+C / SIGTERM gracefully
     import signal
     def _signal_cleanup(sig, frame):
-        _remove_lock()
+        _release_lock()
         sys.exit(0)
-    signal.signal(signal.SIGINT, _signal_cleanup)
-    signal.signal(signal.SIGTERM, _signal_cleanup)
+    try:
+        signal.signal(signal.SIGINT,  _signal_cleanup)
+        signal.signal(signal.SIGTERM, _signal_cleanup)
+    except Exception:
+        pass
+
+
+
+
 
     # ── Create the single root window ─────────────────────────────────────
     root = ctk.CTk()
@@ -130,4 +161,31 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import traceback, datetime
+
+    _LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "forge_crash.log")
+
+    try:
+        main()
+    except Exception as _exc:
+        _tb = traceback.format_exc()
+        _ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # Write to log file next to main.py
+        try:
+            with open(_LOG, "a", encoding="utf-8") as _lf:
+                _lf.write(f"\n{'='*60}\n{_ts}\n{_tb}\n")
+        except Exception:
+            pass
+        # Also show in a messagebox so it's visible even without a console
+        try:
+            import tkinter.messagebox as _mb
+            _mb.showerror(
+                "FORGE — Crash",
+                f"FORGE crashed with an unexpected error.\n\n"
+                f"{str(_exc)[:400]}\n\n"
+                f"Full traceback saved to:\n{_LOG}"
+            )
+        except Exception:
+            pass
+        _release_lock()
+        sys.exit(1)

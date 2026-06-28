@@ -243,18 +243,30 @@ class ForgeApp:
     # ── Project Management ───────────────────────────────────────────────────────
 
     def _check_initial_project(self):
-        """Check if a project is loaded; if not, show new project dialog."""
+        """Show project dialog on first launch. Cancelling is fine — app stays open."""
         if self.project_path is None:
             self._open_project_dialog()
+            # If user cancelled, show idle state — do NOT exit
+            if self.project_path is None:
+                self.chat_panel.add_message(
+                    "SYSTEM",
+                    "👋 Welcome to FORGE!\n\n"
+                    "No project loaded yet.\n"
+                    "• Click the project selector in the top bar to create or open a project.\n"
+                    "• Then enter a goal and press ▶ START.",
+                    "system",
+                )
 
     def _open_project_dialog(self):
-        """Open the new project dialog."""
+        """Open the new/open project dialog. Returns without crashing if cancelled."""
         dialog = NewProjectDialog(self.root)
         self.root.wait_window(dialog)
 
         result = dialog.get_result()
         if result:
             self._handle_new_project_result(result)
+        # No else — just stay idle
+
 
     def _handle_new_project_result(self, result: dict):
         """Load a project from a dialog result dict."""
@@ -461,9 +473,10 @@ class ForgeApp:
         if not self.ctx_manager:
             self._new_session()
 
-        # Create fresh agent manager
+        # Create fresh agent manager, passing the project's render mode
         self.agent_manager = AgentManager(
-            self.ctx_manager, self.project_path, self.session_id
+            self.ctx_manager, self.project_path, self.session_id,
+            render_mode=getattr(self, "render_mode", "terminal"),
         )
 
         # Wire all callbacks (thread-safe via root.after)
