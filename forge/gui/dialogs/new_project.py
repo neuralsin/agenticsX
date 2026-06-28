@@ -108,6 +108,13 @@ class NewProjectDialog(ctk.CTkToplevel):
             command=self._submit,
         )
         self._action_btn.pack(side="right")
+        
+        self.error_label = ctk.CTkLabel(
+            btn_frame, text="",
+            font=config.FONTS["small"],
+            text_color=config.THEME["error"]
+        )
+        self.error_label.pack(side="right", padx=15)
 
         self.bind("<Return>", lambda e: self._submit())
         self.bind("<Escape>", lambda e: self._cancel())
@@ -130,7 +137,7 @@ class NewProjectDialog(ctk.CTkToplevel):
 
         self.name_entry = ctk.CTkEntry(
             self._name_section,
-            placeholder_text="MyAwesomeApp",
+            placeholder_text="Enter project name...",
             font=config.FONTS["body"],
             fg_color=config.THEME["bg_input"],
             border_color=config.THEME["border"],
@@ -260,6 +267,9 @@ class NewProjectDialog(ctk.CTkToplevel):
         self._new_only_frame.pack(fill="x")
         self._action_btn.configure(text="CREATE  →")
         self.location_var.set(str(config.PROJECTS_DIR))
+        self.error_label.configure(text="")
+        self.name_entry.configure(border_color=config.THEME["border"])
+        self.location_entry.configure(border_color=config.THEME["border"])
 
     def _switch_open(self):
         self._mode.set("open")
@@ -270,12 +280,17 @@ class NewProjectDialog(ctk.CTkToplevel):
         self._name_section.pack_forget()
         self._new_only_frame.pack_forget()
         self._action_btn.configure(text="OPEN  →")
+        self.error_label.configure(text="")
+        self.name_entry.configure(border_color=config.THEME["border"])
+        self.location_entry.configure(border_color=config.THEME["border"])
         # Auto-browse for the folder immediately
         self._browse_location()
 
     # ── Browse ────────────────────────────────────────────────────
 
     def _browse_location(self):
+        self.error_label.configure(text="")
+        self.location_entry.configure(border_color=config.THEME["border"])
         if self._mode.get() == "open":
             path = filedialog.askdirectory(
                 title="Select Existing Project Folder",
@@ -301,9 +316,14 @@ class NewProjectDialog(ctk.CTkToplevel):
 
     def _create(self):
         """Create a new project."""
+        self.error_label.configure(text="")
+        self.name_entry.configure(border_color=config.THEME["border"])
+        self.location_entry.configure(border_color=config.THEME["border"])
+        
         name = self.name_entry.get().strip()
         if not name:
             self.name_entry.configure(border_color=config.THEME["error"])
+            self.error_label.configure(text="Please enter a project name")
             return
 
         location = self.location_var.get().strip()
@@ -329,9 +349,13 @@ class NewProjectDialog(ctk.CTkToplevel):
 
     def _open_existing(self):
         """Open an existing project folder."""
+        self.error_label.configure(text="")
+        self.location_entry.configure(border_color=config.THEME["border"])
+        
         path = self.location_var.get().strip()
         if not path or not os.path.isdir(path):
             self.location_entry.configure(border_color=config.THEME["error"])
+            self.error_label.configure(text="Please select a valid folder")
             return
 
         # Detect entry file

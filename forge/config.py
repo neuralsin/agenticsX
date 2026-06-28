@@ -15,7 +15,7 @@ USER_SETTINGS_DIR = _APPDATA / "FORGE"
 USER_SETTINGS_FILE = USER_SETTINGS_DIR / "settings.json"
 USER_SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
 
-_DEFAULT_FORGE_DIR = Path.home() / ".forge"
+_DEFAULT_FORGE_DIR = Path("D:/Forge")
 
 
 def load_user_settings() -> dict:
@@ -58,16 +58,14 @@ SESSIONS_DIR = STORAGE_DIR / "sessions"
 DOCS_DIR     = Path(_s.get("docs_dir",     str(FORGE_DIR / "docs")))
 CONFIG_FILE  = FORGE_DIR / "model_config.json"
 
-# Apply OLLAMA_MODELS env override if user set it
-_ollama_models = _s.get("ollama_models_dir", "")
-if _ollama_models:
-    os.environ["OLLAMA_MODELS"] = _ollama_models
+# Apply OLLAMA_MODELS env override if user set it, else default to D:/Forge/models/ollama
+_ollama_models = _s.get("ollama_models_dir", str(MODELS_DIR / "ollama"))
+os.environ["OLLAMA_MODELS"] = _ollama_models
 
-# Apply HuggingFace / AirLLM cache override
-_hf_cache = _s.get("hf_cache_dir", "")
-if _hf_cache:
-    os.environ["HF_HOME"] = _hf_cache
-    os.environ["TRANSFORMERS_CACHE"] = _hf_cache
+# Apply HuggingFace / AirLLM cache override, else default to D:/Forge/models/huggingface
+_hf_cache = _s.get("hf_cache_dir", str(MODELS_DIR / "huggingface"))
+os.environ["HF_HOME"] = _hf_cache
+os.environ["TRANSFORMERS_CACHE"] = _hf_cache
 
 # Create all required directories
 for _d in [FORGE_DIR, MODELS_DIR, PROJECTS_DIR, LOGS_DIR,
@@ -116,7 +114,7 @@ CONTEXT_BUDGETS = {
 
 # ─── Loop & Safety Limits ───────────────────────────────────────────────────────
 
-MAX_ITERATIONS = 50
+MAX_ITERATIONS = 100
 CONTEXT_PRUNE_THRESHOLD = 0.85  # prune when agent hits 85% of budget
 BACKUP_VERSIONS_KEPT = 5
 EXEC_TIMEOUT = 15  # seconds for project execution
