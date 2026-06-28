@@ -136,6 +136,25 @@ class ForgeApp:
             command=self._open_diagnostics,
         ).pack(side="right", padx=4, pady=7)
 
+        # VSCode button
+        ctk.CTkButton(
+            self.top_bar, text="</> VSCODE",
+            font=config.FONTS["tiny"],
+            fg_color="transparent",
+            hover_color=config.THEME["bg_input"],
+            text_color="#007ACC",
+            width=80, height=24, corner_radius=4,
+            command=self._open_in_vscode,
+        ).pack(side="right", padx=4, pady=7)
+
+        # Git status indicator
+        self.git_status_label = ctk.CTkLabel(
+            self.top_bar, text="",
+            font=config.FONTS["tiny"],
+            text_color=config.THEME["text_muted"],
+        )
+        self.git_status_label.pack(side="right", padx=6, pady=7)
+
         self.rec_indicator = ctk.CTkLabel(
             self.top_bar, text="●REC",
             font=config.FONTS["tiny"],
@@ -263,6 +282,9 @@ class ForgeApp:
         # Start file watcher
         self._start_file_watcher()
 
+        # Initialize Git repo if auto-commit is enabled
+        self._init_git()
+
         # Welcome message
         self.chat_panel.add_message(
             "SYSTEM",
@@ -341,7 +363,90 @@ class ForgeApp:
         display_ts = datetime.now().strftime("%H:%M:%S")
         self.session_label.configure(text=f"Session: {display_ts} ▾")
 
+    # ── Git Integration ──────────────────────────────────────────────────────────
+
+    def _init_git(self):
+        """Initialize git for the current project and update the status indicator."""
+        if not self.project_path:
+            return
+        try:
+            from core.git_manager import GitManager
+            self._git_mgr = GitManager(self.project_path)
+            if config.GIT_AUTO_COMMIT:
+                self._git_mgr.init_repo()
+            self._update_git_status()
+        except Exception as e:
+            self.git_status_label.configure(
+                text="Git: error", text_color=config.THEME["error"]
+            )
+
+    def _update_git_status(self):
+        """Refresh the Git status indicator in the top bar."""
+        if not hasattr(self, "_git_mgr") or not self._git_mgr:
+            self.git_status_label.configure(text="")
+            return
+        try:
+            ok, stdout, _ = self._git_mgr._run_git("status", "--porcelain")
+            branch_ok, branch_out, _ = self._git_mgr._run_git(
+                "rev-parse", "--abbrev-ref", "HEAD"
+            )
+            branch = branch_out.strip() if branch_ok else "?"
+            if ok:
+                changed = len([l for l in stdout.strip().split("\n") if l.strip()])
+                if changed == 0:
+                    self.git_status_label.configure(
+                        text=f"Git: {branch} \u2714",
+                        text_color=config.THEME["success"],
+                    )
+                else:
+                    self.git_status_label.configure(
+                        text=f"Git: {branch} \u00b7 {changed} changed",
+                        text_color=config.THEME["warning"],
+                    )
+            else:
+                self.git_status_label.configure(
+                    text="Git: not initialized",
+                    text_color=config.THEME["text_muted"],
+                )
+        except Exception:
+            self.git_status_label.configure(text="Git: ?")
+
+    # ── VSCode Integration ───────────────────────────────────────────────────────
+
+    def _open_in_vscode(self):
+        """Open the project in VS Code so the user can see live changes."""
+        if not self.project_path:
+            self.chat_panel.add_message(
+                "SYSTEM", "No project loaded. Open a project first.", "system"
+            )
+            return
+        import subprocess
+        try:
+            subprocess.Popen(
+                ["code", self.project_path],
+                shell=True,
+                creationflags=subprocess.CREATE_NO_WINDOW
+                if os.name == "nt" else 0,
+            )
+            self.chat_panel.add_message(
+                "SYSTEM",
+                f"Opened VS Code for: {self.project_path}",
+                "system",
+            )
+        except FileNotFoundError:
+            self.chat_panel.add_message(
+                "SYSTEM",
+                "VS Code not found. Install it and add 'code' to PATH.\n"
+                "Download: https://code.visualstudio.com/",
+                "system",
+            )
+        except Exception as e:
+            self.chat_panel.add_message(
+                "SYSTEM", f"Could not launch VS Code: {e}", "system"
+            )
+
     # ── Agent Loop Control ───────────────────────────────────────────────────────
+
 
     def _on_start_goal(self, goal: str):
         """Start the agent loop with a goal."""
@@ -371,6 +476,7 @@ class ForgeApp:
         self.agent_manager.on_plan_update = lambda *a: self.root.after(0, self._on_plan_update, *a)
         self.agent_manager.on_complete = lambda *a: self.root.after(0, self._on_complete, *a)
         self.agent_manager.on_error = lambda *a: self.root.after(0, self._on_error, *a)
+        self.agent_manager.on_iteration_start = lambda *a: self.root.after(0, self._on_iteration, *a)
 
         # Show recording indicator
         self.rec_indicator.pack(side="right", padx=4, pady=7)
@@ -464,12 +570,19 @@ class ForgeApp:
     def _on_agent_status_change(self, agent_name: str, status: str):
         self.agent_panel.set_agent_status(agent_name, status)
 
+    def _on_iteration(self, iteration: int):
+        """Called at the start of each loop iteration — refresh visual indicators."""
+        self._update_git_status()
+        self.stats_panel.update_iteration(iteration)
+
     def _on_file_changed(self, filepath: str, diff: str):
         self.code_panel.add_changed_file(filepath)
         if diff:
             self.code_panel.show_diff(filepath, diff, "Applied by CODER — SUPERVISOR approved")
         if self.project_path:
             self.code_panel.load_project_tree(self.project_path)
+        # Refresh Git status after file changes
+        self._update_git_status()
 
     def _on_exec_result(self, exit_code: int, stdout: str, stderr: str):
         if stdout:
@@ -501,6 +614,7 @@ class ForgeApp:
         self.steering_bar.set_running(False)
         self.rec_indicator.pack_forget()
         self.chat_panel.set_live(False)
+        self._update_git_status()
 
     def _on_error(self, error_msg: str):
         self.chat_panel.add_message("SYSTEM", f"❌ Error: {error_msg}", "system")
@@ -621,6 +735,16 @@ class ForgeApp:
                          text_color=config.THEME["text_primary"],
                          anchor="w").pack(side="left", padx=4)
 
+        ctk.CTkButton(
+            tab_models, text="🤖  Change Models...",
+            font=config.FONTS["body"],
+            fg_color=config.THEME["accent"],
+            hover_color=config.THEME["accent_hover"],
+            text_color="#FFFFFF",
+            height=38, corner_radius=8,
+            command=lambda: self._launch_model_picker(settings_win),
+        ).pack(pady=(12, 4), padx=16, fill="x")
+
         # ── Tab 3: Loop Config ────────────────────────────────────────────────
         tab_loop = tabview.add("🔄 Loop")
 
@@ -671,4 +795,8 @@ class ForgeApp:
         w = parent_win or self.root
         StorageSettingsDialog(w)
 
-
+    def _launch_model_picker(self, parent_win=None):
+        """Open the Model Picker dialog."""
+        from gui.dialogs.model_picker import ModelPickerDialog
+        w = parent_win or self.root
+        ModelPickerDialog(w)

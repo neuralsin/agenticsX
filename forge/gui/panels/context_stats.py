@@ -254,3 +254,8 @@ class ContextStatsPanel(ctk.CTkFrame):
         """Trigger timeline callback."""
         if self.on_timeline_requested:
             self.on_timeline_requested()
+
+    def update_iteration(self, iteration: int):
+        """Update the iteration counter label."""
+        max_iter = config.MAX_ITERATIONS
+        self.iter_label.configure(text=f"Iter: {iteration}/{max_iter}")

@@ -121,6 +121,18 @@ class AgentCard(ctk.CTkFrame):
             highlightthickness=0,
         )
         self.sparkline_canvas.pack(fill="x", padx=(24, 0), pady=(4, 0))
+
+        # Live activity text (shows what agent is doing right now)
+        self.activity_label = ctk.CTkLabel(
+            self.main_frame,
+            text="",
+            font=config.FONTS["tiny"],
+            text_color=self.agent_color,
+            anchor="w",
+            wraplength=200,
+        )
+        self.activity_label.pack(fill="x", padx=(24, 0), pady=(2, 0))
+        self.activity_label.pack_forget()  # Hidden until there's activity
         
         # ── Expandable details (hidden by default) ───────────────
         self.details_frame = ctk.CTkFrame(
@@ -145,6 +157,7 @@ class AgentCard(ctk.CTkFrame):
         for child in self.main_frame.winfo_children():
             child.bind("<Button-1>", self._toggle_expand)
 
+
     def _toggle_expand(self, event=None):
         """Toggle the expanded details section."""
         self.expanded = not self.expanded
@@ -159,6 +172,33 @@ class AgentCard(ctk.CTkFrame):
         status = stats.get("status", "idle")
         self.badge.set_status(status)
         
+        # Visual glow when thinking — highlight the card border
+        if status == "thinking":
+            self.configure(border_color=self.agent_color)
+        else:
+            self.configure(border_color=config.THEME["border"])
+
+        # Show/update live activity text
+        last_error = stats.get("last_error", "")
+        if status == "thinking":
+            self.activity_label.configure(text="Reasoning...")
+            self.activity_label.pack(fill="x", padx=(24, 0), pady=(2, 0))
+        elif status == "error" and last_error:
+            self.activity_label.configure(
+                text=f"Error: {last_error[:80]}",
+                text_color=config.THEME["error"],
+            )
+            self.activity_label.pack(fill="x", padx=(24, 0), pady=(2, 0))
+        elif stats.get("calls", 0) > 0:
+            resp_time = stats.get("last_response_time", 0)
+            self.activity_label.configure(
+                text=f"Last call: {resp_time:.1f}s",
+                text_color=self.agent_color,
+            )
+            self.activity_label.pack(fill="x", padx=(24, 0), pady=(2, 0))
+        else:
+            self.activity_label.pack_forget()
+
         # Update token count
         total = stats.get("tokens_total", 0)
         if total >= 1000:
@@ -185,6 +225,7 @@ class AgentCard(ctk.CTkFrame):
         history = stats.get("tokens_history", [])
         if history:
             self._draw_sparkline(history)
+
 
     def _draw_sparkline(self, values: list):
         """Draw a mini sparkline chart of token usage."""

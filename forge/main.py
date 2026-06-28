@@ -29,19 +29,35 @@ import atexit
 _LOCK_FILE = os.path.join(tempfile.gettempdir(), "forge_running.lock")
 
 def _is_already_running() -> bool:
-    """Return True if another FORGE instance holds the lock file."""
+    """Return True only if another FORGE instance is genuinely alive."""
     if not os.path.exists(_LOCK_FILE):
         return False
     try:
         with open(_LOCK_FILE, "r") as f:
             pid = int(f.read().strip())
-        # Check if that PID is still alive
+        if pid == os.getpid():
+            return False  # It's us (re-entry)
         import psutil
-        if psutil.pid_exists(pid) and pid != os.getpid():
-            return True
+        if not psutil.pid_exists(pid):
+            # Stale lock — the process is dead
+            _remove_lock()
+            return False
+        proc = psutil.Process(pid)
+        # Check if the process is actually a Python running FORGE
+        cmdline = " ".join(proc.cmdline()).lower()
+        pname = proc.name().lower()
+        is_forge = ("python" in pname or "forge" in pname) and (
+            "main.py" in cmdline or "forge" in cmdline
+        )
+        if not is_forge:
+            # PID got recycled to a non-FORGE process — stale lock
+            _remove_lock()
+            return False
+        return True
     except Exception:
-        pass
-    return False
+        # Any error (permission denied, zombie, etc.) — assume stale
+        _remove_lock()
+        return False
 
 def _write_lock():
     """Write our PID to the lock file."""
@@ -60,6 +76,7 @@ def _remove_lock():
         pass
 
 
+
 def main():
     """Launch the FORGE application."""
 
@@ -76,6 +93,14 @@ def main():
 
     _write_lock()
     atexit.register(_remove_lock)
+
+    # Also clean up on signals (Ctrl+C, terminal close, etc.)
+    import signal
+    def _signal_cleanup(sig, frame):
+        _remove_lock()
+        sys.exit(0)
+    signal.signal(signal.SIGINT, _signal_cleanup)
+    signal.signal(signal.SIGTERM, _signal_cleanup)
 
     # ── Create the single root window ─────────────────────────────────────
     root = ctk.CTk()
