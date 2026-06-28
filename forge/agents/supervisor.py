@@ -62,8 +62,9 @@ class SupervisorAgent(AirLLMAgent):
         return self._parse_routing(response)
 
     def review_code(self, filename: str, new_code: str,
-                    change_description: str) -> dict:
-        """Quality gate before any file write."""
+                    change_description: str,
+                    team_context: list = None) -> dict:
+        """Quality gate before any file write. Gets team bus context."""
         # Truncate code to keep within context budget
         code_preview = new_code[:3000]
         task = f"""Review this proposed change:
@@ -75,7 +76,7 @@ DESCRIPTION: {change_description}
 ```
 
 Is this safe to apply? Check for: syntax issues, logic errors, breaking changes."""
-        response = self.call(task)
+        response = self.call(task, team_context=team_context)
         return self._parse_review(response)
 
     def _parse_routing(self, response: str) -> dict:

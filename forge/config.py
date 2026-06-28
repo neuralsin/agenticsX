@@ -8,20 +8,75 @@ import os
 import json
 from pathlib import Path
 
-# ─── Paths ──────────────────────────────────────────────────────────────────────
+# ─── User Settings File (persists path overrides) ───────────────────────────────
 
-FORGE_DIR = Path.home() / ".forge"
-MODELS_DIR = FORGE_DIR / "models"
-PROJECTS_DIR = FORGE_DIR / "projects"
-LOGS_DIR = FORGE_DIR / "logs"
-STORAGE_DIR = FORGE_DIR / "storage"
+_APPDATA = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+USER_SETTINGS_DIR = _APPDATA / "FORGE"
+USER_SETTINGS_FILE = USER_SETTINGS_DIR / "settings.json"
+USER_SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
+
+_DEFAULT_FORGE_DIR = Path.home() / ".forge"
+
+
+def load_user_settings() -> dict:
+    """Load persisted user settings from %APPDATA%/FORGE/settings.json."""
+    try:
+        if USER_SETTINGS_FILE.exists():
+            with open(USER_SETTINGS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+
+def save_user_settings(updates: dict):
+    """Persist user settings to %APPDATA%/FORGE/settings.json."""
+    try:
+        existing = load_user_settings()
+        existing.update(updates)
+        with open(USER_SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(existing, f, indent=2)
+    except Exception as e:
+        print(f"[CONFIG] Failed to save settings: {e}")
+
+
+def get_user_setting(key: str, default):
+    """Get a single user setting with a default fallback."""
+    return load_user_settings().get(key, default)
+
+
+# ─── Paths (user-overridable via Storage Settings dialog) ───────────────────────
+
+_s = load_user_settings()
+
+FORGE_DIR    = Path(_s.get("forge_dir",    str(_DEFAULT_FORGE_DIR)))
+MODELS_DIR   = Path(_s.get("models_dir",   str(FORGE_DIR / "models")))
+PROJECTS_DIR = Path(_s.get("projects_dir", str(FORGE_DIR / "projects")))
+LOGS_DIR     = Path(_s.get("logs_dir",     str(FORGE_DIR / "logs")))
+STORAGE_DIR  = Path(_s.get("storage_dir",  str(FORGE_DIR / "storage")))
 SESSIONS_DIR = STORAGE_DIR / "sessions"
-DOCS_DIR = FORGE_DIR / "docs"         # RAG Librarian docs folder
-CONFIG_FILE = FORGE_DIR / "model_config.json"  # Persistent model registry
+DOCS_DIR     = Path(_s.get("docs_dir",     str(FORGE_DIR / "docs")))
+CONFIG_FILE  = FORGE_DIR / "model_config.json"
 
-for d in [FORGE_DIR, MODELS_DIR, PROJECTS_DIR, LOGS_DIR, STORAGE_DIR,
-          SESSIONS_DIR, DOCS_DIR]:
-    d.mkdir(parents=True, exist_ok=True)
+# Apply OLLAMA_MODELS env override if user set it
+_ollama_models = _s.get("ollama_models_dir", "")
+if _ollama_models:
+    os.environ["OLLAMA_MODELS"] = _ollama_models
+
+# Apply HuggingFace / AirLLM cache override
+_hf_cache = _s.get("hf_cache_dir", "")
+if _hf_cache:
+    os.environ["HF_HOME"] = _hf_cache
+    os.environ["TRANSFORMERS_CACHE"] = _hf_cache
+
+# Create all required directories
+for _d in [FORGE_DIR, MODELS_DIR, PROJECTS_DIR, LOGS_DIR,
+           STORAGE_DIR, SESSIONS_DIR, DOCS_DIR]:
+    try:
+        _d.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+
 
 # ─── AirLLM Configuration ───────────────────────────────────────────────────────
 
@@ -42,7 +97,7 @@ OLLAMA_TIMEOUT = 120  # seconds
 
 # ─── Gemini (AUDITOR) Configuration ─────────────────────────────────────────────
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "") or get_user_setting("gemini_api_key", "")
 GEMINI_MODEL = "gemini-2.5-flash"
 AUDITOR_TRIGGER = "on_disagreement"  # "on_disagreement" | "every_n_iterations" | "both"
 AUDITOR_EVERY_N = 3

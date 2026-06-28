@@ -379,6 +379,7 @@ class ForgeApp:
         # Launch
         self.agent_manager.start(goal)
         self.steering_bar.set_running(True)
+        self.chat_panel.set_live(True)
 
     def _on_pause(self):
         """Pause the agent loop."""
@@ -397,6 +398,7 @@ class ForgeApp:
             self.agent_manager.stop()
         self.steering_bar.set_running(False)
         self.rec_indicator.pack_forget()
+        self.chat_panel.set_live(False)
 
     def _on_steering_input(self, text: str):
         """Handle user steering injection."""
@@ -498,6 +500,7 @@ class ForgeApp:
         )
         self.steering_bar.set_running(False)
         self.rec_indicator.pack_forget()
+        self.chat_panel.set_live(False)
 
     def _on_error(self, error_msg: str):
         self.chat_panel.add_message("SYSTEM", f"❌ Error: {error_msg}", "system")
@@ -526,67 +529,146 @@ class ForgeApp:
         DiagnosticsDialog(self.root)
 
     def _open_settings(self):
-        """Open settings dialog."""
-        settings = ctk.CTkToplevel(self.root)
-        settings.title("FORGE — Settings")
-        settings.geometry("520x460")
-        settings.configure(fg_color=config.THEME["bg_secondary"])
-        settings.transient(self.root)
-        settings.grab_set()
+        """Open the full FORGE settings dialog (tabbed)."""
+        settings_win = ctk.CTkToplevel(self.root)
+        settings_win.title("FORGE — Settings")
+        settings_win.geometry("560x500")
+        settings_win.configure(fg_color=config.THEME["bg_secondary"])
+        settings_win.transient(self.root)
+        settings_win.grab_set()
+        settings_win.resizable(True, True)
 
+        # Header
         ctk.CTkLabel(
-            settings, text="⚙️ Settings",
+            settings_win, text="⚙️  FORGE Settings",
             font=config.FONTS["heading"],
             text_color=config.THEME["text_primary"],
         ).pack(padx=20, pady=(16, 8), anchor="w")
 
-        scroll = ctk.CTkScrollableFrame(settings, fg_color="transparent")
-        scroll.pack(fill="both", expand=True, padx=16, pady=8)
+        tabview = ctk.CTkTabview(
+            settings_win,
+            fg_color=config.THEME["bg_primary"],
+            segmented_button_fg_color=config.THEME["bg_tertiary"],
+            segmented_button_selected_color=config.THEME["accent"],
+            segmented_button_selected_hover_color=config.THEME["accent_hover"],
+            segmented_button_unselected_color=config.THEME["bg_tertiary"],
+            segmented_button_unselected_hover_color=config.THEME["bg_input"],
+            text_color=config.THEME["text_primary"],
+        )
+        tabview.pack(fill="both", expand=True, padx=16, pady=8)
 
-        # Section: Models
-        ctk.CTkLabel(
-            scroll, text="Model Configuration",
-            font=config.FONTS["subheading"],
-            text_color=config.THEME["accent"],
-        ).pack(anchor="w", pady=(0, 6))
+        # ── Tab 1: Storage Paths ──────────────────────────────────────────────
+        tab_storage = tabview.add("💾 Storage")
 
-        settings_items = [
-            ("AirLLM Model", config.AIRLLM_MODEL_ID),
-            ("Ollama Host", config.OLLAMA_HOST),
-            ("Planner Model", config.OLLAMA_PLANNER_MODEL),
-            ("Debugger Model", config.OLLAMA_DEBUGGER_MODEL),
-            ("Vision Model", config.OLLAMA_VISION_MODEL),
-            ("Auditor Model", config.GEMINI_MODEL),
-            ("Max Iterations", str(config.MAX_ITERATIONS)),
-            ("Exec Timeout", f"{config.EXEC_TIMEOUT}s"),
-            ("TDD Enabled", str(config.TDD_ENABLED)),
-            ("Git Auto-commit", str(config.GIT_AUTO_COMMIT)),
-            ("RAG Enabled", str(config.RAG_ENABLED)),
-            ("AST Indexer", str(config.AST_ENABLED)),
+        storage_items = [
+            ("FORGE Home", str(config.FORGE_DIR)),
+            ("Models Dir", str(config.MODELS_DIR)),
+            ("Projects Dir", str(config.PROJECTS_DIR)),
+            ("Sessions / DB", str(config.STORAGE_DIR)),
+            ("RAG Docs Dir", str(config.DOCS_DIR)),
+            ("HF_HOME", os.environ.get("HF_HOME", "(default)")),
+            ("OLLAMA_MODELS", os.environ.get("OLLAMA_MODELS", "(default)")),
+            ("Settings File", str(config.USER_SETTINGS_FILE)),
         ]
 
-        for label, value in settings_items:
-            row = ctk.CTkFrame(scroll, fg_color="transparent")
-            row.pack(fill="x", pady=2)
-            ctk.CTkLabel(
-                row, text=label,
-                font=config.FONTS["small"],
-                text_color=config.THEME["text_secondary"],
-                width=150, anchor="w",
-            ).pack(side="left")
-            ctk.CTkLabel(
-                row, text=value,
-                font=config.FONTS["mono_small"],
-                text_color=config.THEME["text_primary"],
-                anchor="w",
-            ).pack(side="left", padx=8)
+        scroll_s = ctk.CTkScrollableFrame(tab_storage, fg_color="transparent")
+        scroll_s.pack(fill="both", expand=True)
+
+        for lbl, val in storage_items:
+            row = ctk.CTkFrame(scroll_s, fg_color="transparent")
+            row.pack(fill="x", pady=1)
+            ctk.CTkLabel(row, text=lbl, font=config.FONTS["small"],
+                         text_color=config.THEME["text_secondary"],
+                         width=130, anchor="w").pack(side="left")
+            ctk.CTkLabel(row, text=val, font=config.FONTS["mono_tiny"],
+                         text_color=config.THEME["text_primary"],
+                         anchor="w", wraplength=340).pack(side="left", padx=4)
 
         ctk.CTkButton(
-            settings, text="Close",
+            tab_storage, text="📂  Open Storage Settings...",
+            font=config.FONTS["body"],
+            fg_color=config.THEME["accent"],
+            hover_color=config.THEME["accent_hover"],
+            text_color="#FFFFFF",
+            height=38, corner_radius=8,
+            command=lambda: self._launch_storage_settings(settings_win),
+        ).pack(pady=(12, 4), padx=16, fill="x")
+
+        # ── Tab 2: Models ─────────────────────────────────────────────────────
+        tab_models = tabview.add("🤖 Models")
+
+        model_items = [
+            ("AirLLM Model", config.AIRLLM_MODEL_ID),
+            ("Ollama Host", config.OLLAMA_HOST),
+            ("Planner (Ollama)", config.OLLAMA_PLANNER_MODEL),
+            ("Debugger (Ollama)", config.OLLAMA_DEBUGGER_MODEL),
+            ("Vision (Ollama)", config.OLLAMA_VISION_MODEL),
+            ("Tester (Ollama)", config.OLLAMA_TESTER_MODEL),
+            ("Auditor (Gemini)", config.GEMINI_MODEL),
+            ("Gemini Key Set", "Yes ✓" if config.GEMINI_API_KEY else "No ✗"),
+        ]
+
+        scroll_m = ctk.CTkScrollableFrame(tab_models, fg_color="transparent")
+        scroll_m.pack(fill="both", expand=True)
+
+        for lbl, val in model_items:
+            row = ctk.CTkFrame(scroll_m, fg_color="transparent")
+            row.pack(fill="x", pady=1)
+            ctk.CTkLabel(row, text=lbl, font=config.FONTS["small"],
+                         text_color=config.THEME["text_secondary"],
+                         width=150, anchor="w").pack(side="left")
+            ctk.CTkLabel(row, text=val, font=config.FONTS["mono_tiny"],
+                         text_color=config.THEME["text_primary"],
+                         anchor="w").pack(side="left", padx=4)
+
+        # ── Tab 3: Loop Config ────────────────────────────────────────────────
+        tab_loop = tabview.add("🔄 Loop")
+
+        loop_items = [
+            ("Max Iterations", str(config.MAX_ITERATIONS)),
+            ("Exec Timeout", f"{config.EXEC_TIMEOUT}s"),
+            ("TDD Enabled", "Yes ✓" if config.TDD_ENABLED else "No"),
+            ("TDD Framework", config.TDD_FRAMEWORK),
+            ("Git Auto-commit", "Yes ✓" if config.GIT_AUTO_COMMIT else "No"),
+            ("Git Prefix", config.GIT_COMMIT_PREFIX),
+            ("RAG Enabled", "Yes ✓" if config.RAG_ENABLED else "No"),
+            ("RAG Top-K", str(config.RAG_TOP_K)),
+            ("AST Indexer", "Yes ✓" if config.AST_ENABLED else "No"),
+            ("Auditor Trigger", config.AUDITOR_TRIGGER),
+            ("Auditor Every N", str(config.AUDITOR_EVERY_N)),
+            ("Canvas Steering", "Yes ✓" if config.CANVAS_STEERING_ENABLED else "No"),
+            ("Context Prune", f"{int(config.CONTEXT_PRUNE_THRESHOLD*100)}%"),
+            ("Backup Versions", str(config.BACKUP_VERSIONS_KEPT)),
+        ]
+
+        scroll_l = ctk.CTkScrollableFrame(tab_loop, fg_color="transparent")
+        scroll_l.pack(fill="both", expand=True)
+
+        for lbl, val in loop_items:
+            row = ctk.CTkFrame(scroll_l, fg_color="transparent")
+            row.pack(fill="x", pady=1)
+            ctk.CTkLabel(row, text=lbl, font=config.FONTS["small"],
+                         text_color=config.THEME["text_secondary"],
+                         width=160, anchor="w").pack(side="left")
+            ctk.CTkLabel(row, text=val, font=config.FONTS["mono_small"],
+                         text_color=config.THEME["text_primary"],
+                         anchor="w").pack(side="left", padx=4)
+
+        # Close button
+        ctk.CTkButton(
+            settings_win, text="Close",
             font=config.FONTS["body"],
             fg_color=config.THEME["bg_input"],
             hover_color=config.THEME["border_light"],
             text_color=config.THEME["text_primary"],
             width=100, height=36, corner_radius=8,
-            command=settings.destroy,
-        ).pack(pady=(0, 16))
+            command=settings_win.destroy,
+        ).pack(pady=(0, 14))
+
+    def _launch_storage_settings(self, parent_win=None):
+        """Open the Storage Path Settings dialog."""
+        from gui.dialogs.storage_settings import StorageSettingsDialog
+        w = parent_win or self.root
+        StorageSettingsDialog(w)
+
+

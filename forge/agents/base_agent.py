@@ -38,29 +38,46 @@ class BaseAgent(ABC):
         self.status_callbacks = []  # GUI binds here
         self._lock = threading.Lock()
 
-    def call(self, task: str, extra_context: dict = None) -> str:
+    def call(self, task: str, extra_context: dict = None,
+             team_context: list = None) -> str:
         """
         Main entry point for agent inference.
         1. Sets status to 'thinking'
-        2. Builds context from DB
-        3. Runs model inference
-        4. Tracks tokens
-        5. Persists to DB
+        2. Builds context from DB (own history)
+        3. Injects team_context (other agents' recent outputs)
+        4. Runs model inference
+        5. Tracks tokens & persists to DB
         6. Returns response text
         """
         self._set_status("thinking")
-        
+
         try:
-            # Build context from DB
+            # Build own conversation context from DB
             messages, tokens_in = self.ctx.get_agent_context(
                 self.name, self.session_id, task
             )
-            
+
+            # Inject team bus context so this agent sees what others said
+            if team_context:
+                bus_text = "\n".join(
+                    f"[{m['agent']}]: {m['content'][:600]}"
+                    for m in team_context
+                )
+                bus_msg = (
+                    f"[TEAM CONVERSATION — recent outputs from your colleagues]\n"
+                    f"{bus_text}\n"
+                    f"[END TEAM CONTEXT]"
+                )
+                # Insert before the task (after system message)
+                insert_pos = 1 if (messages and messages[0]["role"] == "system") else 0
+                messages.insert(insert_pos, {"role": "user", "content": bus_msg})
+                tokens_in += count_tokens(bus_msg)
+
             # Add current task
             messages.append({"role": "user", "content": task})
             tokens_in += count_tokens(task)
 
-            # Add extra context if provided
+            # Add any extra file/code context
             if extra_context:
                 for key, value in extra_context.items():
                     ctx_msg = f"[{key}]\n{value}"
@@ -99,6 +116,7 @@ class BaseAgent(ABC):
             self.last_error = str(e)
             self._set_status("error")
             return f"[AGENT ERROR: {self.name}] {str(e)}"
+
 
     @abstractmethod
     def _inference(self, messages: list[dict]) -> str:

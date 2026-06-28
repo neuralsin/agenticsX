@@ -50,6 +50,10 @@ class AgentManager:
         self.current_step = 0
         self.current_goal = ""
 
+        # Shared team message bus — all agents can see recent peer outputs
+        self.team_bus: list[dict] = []   # [{agent, content, iteration}]
+        self._BUS_MAX = 20               # keep last N messages on the bus
+
         # Tools
         self.diff_engine = DiffEngine(project_path)
         self.executor = Executor(project_path)
@@ -149,22 +153,23 @@ class AgentManager:
                        f"Starting on goal: {goal}", "system")
 
             # Phase 1: Planning
-            self._emit("on_message", "SYSTEM", 
+            self._emit("on_message", "SYSTEM",
                        "Phase 1: Creating implementation plan...", "system")
             project_structure = self._scan_project()
             plan = self.planner.create_plan(goal, project_structure)
             self.current_plan = plan
             self._emit("on_plan_update", plan, 0)
-            self._emit("on_message", "PLANNER", 
+            self._emit("on_message", "PLANNER",
                        self._format_plan(plan), "assistant")
 
-            # Phase 2: Supervisor reviews plan
-            self._emit("on_message", "SYSTEM", 
+            # Phase 2: SUPERVISOR reviews the plan (sees PLANNER's output via team bus)
+            self._emit("on_message", "SYSTEM",
                        "Phase 2: SUPERVISOR reviewing plan...", "system")
-            supervisor_ok = self.supervisor.call(
+            supervisor_ok = self._agent_call(
+                self.supervisor,
                 f"PLANNER produced this plan for goal: {goal}\n\n"
                 f"{self._format_plan(plan)}\n\n"
-                f"Review and approve or revise."
+                f"Review and approve or revise. Reply with APPROVE or suggest specific changes."
             )
             self._emit("on_message", "SUPERVISOR", supervisor_ok, "assistant")
 
@@ -181,39 +186,54 @@ class AgentManager:
                 self._emit("on_iteration_start", self.iteration)
                 self._emit_stats()
 
-                # Auditor periodic check
+                # Auditor periodic check (wrapped — missing key must not crash loop)
                 if self.auditor.should_trigger(self.iteration, False):
-                    self._emit("on_message", "SYSTEM", "AUDITOR performing periodic review...", "system")
-                    proj_summary = self._scan_project()
-                    audit_res = self.auditor.periodic_review(proj_summary, "Periodic check", self.iteration)
-                    self._emit("on_message", "AUDITOR", f"Verdict: {audit_res['verdict']}\n{audit_res['summary']}", "assistant")
-                    if audit_res['verdict'] == "INDEPENDENT_FIX":
-                        steering = f"AUDITOR SUGGESTS: {audit_res['fix_suggestion']}"
-                        self.ctx.add_steering(self.session_id, steering, self.iteration)
+                    try:
+                        self._emit("on_message", "SYSTEM",
+                                   "AUDITOR performing periodic review...", "system")
+                        proj_summary = self._scan_project()
+                        audit_res = self.auditor.periodic_review(
+                            proj_summary, "Periodic quality check", self.iteration
+                        )
+                        self._emit("on_message", "AUDITOR",
+                                   f"Verdict: {audit_res['verdict']}\n"
+                                   f"Summary: {audit_res['summary']}",
+                                   "assistant")
+                        if audit_res["verdict"] == "INDEPENDENT_FIX":
+                            self.ctx.add_steering(
+                                self.session_id,
+                                f"AUDITOR SUGGESTS: {audit_res['fix_suggestion']}",
+                                self.iteration,
+                            )
+                    except Exception as audit_err:
+                        self._emit("on_message", "AUDITOR",
+                                   f"[Skipped — {audit_err}]", "system")
 
                 # Check for user steering
                 steering = self.ctx.get_pending_steering(self.session_id)
                 if steering:
-                    self._emit("on_message", "USER", 
+                    self._emit("on_message", "USER",
                               f"[STEERING] {steering}", "user")
-                    # Supervisor decides how to incorporate
-                    routing = self.supervisor.route(
+                    # Supervisor decides how to incorporate steering
+                    routing = self._agent_call(
+                        self.supervisor,
                         f"User steering received: {steering}\n"
                         f"Current plan step: {self.current_step}/{len(self.current_plan)}\n"
-                        f"How should we adjust?"
+                        f"How should we adjust? Your team's recent activity is in context."
                     )
+                    routing_parsed = self.supervisor._parse_routing(routing)
                     self._emit("on_message", "SUPERVISOR",
-                              f"Routing: {routing['action']} — {routing['reason']}",
+                              f"Routing decision: {routing_parsed['action']} — {routing_parsed['reason']}",
                               "assistant")
-                    
-                    if routing.get("action") == "REPLAN":
-                        plan = self.planner.replan(
+
+                    if routing_parsed.get("action") == "REPLAN":
+                        new_plan = self.planner.replan(
                             self._format_plan(self.current_plan),
                             list(range(self.current_step)),
                             steering
                         )
-                        self.current_plan = plan
-                        self._emit("on_plan_update", plan, self.current_step)
+                        self.current_plan = new_plan
+                        self._emit("on_plan_update", new_plan, self.current_step)
 
                 # Check if plan is complete
                 if self.current_step >= len(self.current_plan):
@@ -303,10 +323,11 @@ class AgentManager:
                   f"Description: {result['description']}",
                   "assistant")
 
-        # SUPERVISOR reviews before writing
+        # SUPERVISOR reviews before writing (sees CODER + TESTER via team bus)
         if result["code"]:
             review = self.supervisor.review_code(
-                result["filename"], result["code"], result["description"]
+                result["filename"], result["code"], result["description"],
+                team_context=self._get_bus(8),
             )
             self._emit("on_message", "SUPERVISOR",
                        f"Code review: {review['verdict']} — {review['issues']}",
@@ -549,14 +570,45 @@ class AgentManager:
             )
         return "\n".join(lines)
 
+    # ── Team Bus ──────────────────────────────────────────────────────────────
+
+    def _post_to_bus(self, agent_name: str, content: str):
+        """Post an agent message to the shared team bus."""
+        if agent_name in ("SYSTEM", "USER"):
+            return  # Only agent outputs go on the bus
+        self.team_bus.append({
+            "agent": agent_name,
+            "content": content,
+            "iteration": self.iteration,
+        })
+        if len(self.team_bus) > self._BUS_MAX:
+            self.team_bus.pop(0)
+
+    def _get_bus(self, n: int = 8) -> list:
+        """Get the last n messages from the team bus."""
+        return self.team_bus[-n:] if self.team_bus else []
+
+    def _agent_call(self, agent, task: str, extra_context: dict = None) -> str:
+        """Call an agent with current team bus context injected."""
+        return agent.call(
+            task,
+            extra_context=extra_context,
+            team_context=self._get_bus(8),
+        )
+
     def _emit(self, event_name: str, *args):
         """Emit an event to the GUI callback."""
+        # If it's a message event, also post to team bus
+        if event_name == "on_message" and len(args) >= 2:
+            self._post_to_bus(args[0], args[1])
+
         callback = getattr(self, event_name, None)
         if callback:
             try:
                 callback(*args)
-            except Exception:
-                pass  # Don't crash on callback errors
+            except Exception as e:
+                import traceback
+                print(f"[EMIT ERROR] {event_name}: {e}")
 
     def _emit_stats(self):
         """Emit comprehensive stats update."""

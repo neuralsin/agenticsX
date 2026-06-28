@@ -33,3 +33,7 @@ watchdog>=4.0.0
 # New in v2
 google-generativeai>=0.8.2
 pytest>=8.0.0
+gitpython>=3.1.40
+
+# Optional: for Desktop shortcut creation via setup.py
+# pywin32>=306

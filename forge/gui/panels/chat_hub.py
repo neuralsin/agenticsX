@@ -165,29 +165,53 @@ class ChatHubPanel(ctk.CTkFrame):
         # Filter bar
         filter_bar = ctk.CTkFrame(
             self, fg_color=config.THEME["bg_primary"],
-            corner_radius=0, height=32,
+            corner_radius=0, height=34,
         )
         filter_bar.pack(fill="x")
         filter_bar.pack_propagate(False)
-        
+
         self.filter_buttons = {}
-        agents = ["ALL", "SUPERVISOR", "PLANNER", "CODER", "DEBUGGER", "VISION", "USER"]
-        
+        agents = [
+            "ALL", "SUPERVISOR", "PLANNER", "CODER",
+            "DEBUGGER", "VISION", "AUDITOR", "TESTER", "USER"
+        ]
+
         for agent in agents:
             color = config.AGENT_COLORS.get(agent, config.THEME["text_secondary"])
+            abbrev = agent[:3] if agent not in ("ALL", "USER") else agent
             btn = ctk.CTkButton(
-                filter_bar, text=agent[:3] if agent != "ALL" else "ALL",
+                filter_bar, text=abbrev,
                 font=config.FONTS["tiny"],
                 fg_color="transparent",
                 text_color=color if agent != "ALL" else config.THEME["text_primary"],
                 hover_color=config.THEME["bg_tertiary"],
-                width=40, height=24,
+                width=38, height=24,
                 corner_radius=4,
                 command=lambda a=agent: self._toggle_filter(a),
             )
-            btn.pack(side="left", padx=2, pady=4)
+            btn.pack(side="left", padx=1, pady=4)
             self.filter_buttons[agent] = btn
-        
+
+        # LIVE indicator (pulsing when running)
+        self._live_label = ctk.CTkLabel(
+            filter_bar, text="● LIVE",
+            font=config.FONTS["tiny"],
+            text_color=config.THEME["success"],
+        )
+        self._live_label.pack(side="right", padx=8)
+        self._live_label.pack_forget()  # Hidden until running
+
+        # Export button
+        ctk.CTkButton(
+            filter_bar, text="⬇ Export",
+            font=config.FONTS["tiny"],
+            fg_color="transparent",
+            hover_color=config.THEME["bg_tertiary"],
+            text_color=config.THEME["text_muted"],
+            width=60, height=24, corner_radius=4,
+            command=self._export_conversation,
+        ).pack(side="right", padx=4)
+
         # ── Messages area (scrollable) ──────────────────────────
         self.messages_container = ctk.CTkScrollableFrame(
             self, fg_color=config.THEME["bg_primary"],
@@ -195,11 +219,14 @@ class ChatHubPanel(ctk.CTkFrame):
             scrollbar_button_hover_color=config.THEME["border_light"],
         )
         self.messages_container.pack(fill="both", expand=True, padx=0, pady=0)
-        
+
         # Welcome message
         self._add_system_message(
-            "FORGE is ready. Set a project goal and press ▶ START to begin."
+            "🔥 FORGE is ready. Set a project goal and press ▶ START to begin.\n"
+            "All 7 agents will collaborate and you'll see their conversation here."
         )
+
+
 
     def add_message(self, agent_name: str, content: str, 
                     role: str = "assistant"):
@@ -317,3 +344,52 @@ class ChatHubPanel(ctk.CTkFrame):
             if msg_data["widget"]:
                 msg_data["widget"].destroy()
         self.messages.clear()
+
+    def set_live(self, running: bool):
+        """Show/hide the LIVE indicator and pulse it."""
+        if running:
+            self._live_label.pack(side="right", padx=8)
+            self._pulse_live()
+        else:
+            self._live_label.pack_forget()
+
+    def _pulse_live(self):
+        """Pulse the LIVE indicator colour."""
+        if not self._live_label.winfo_ismapped():
+            return
+        current = self._live_label.cget("text_color")
+        import config as _c
+        next_color = (
+            _c.THEME["success"] if current != _c.THEME["success"]
+            else _c.THEME["bg_tertiary"]
+        )
+        self._live_label.configure(text_color=next_color)
+        self._live_label.after(700, self._pulse_live)
+
+    def _export_conversation(self):
+        """Export the conversation log to a .txt file."""
+        from tkinter import filedialog
+        from datetime import datetime
+        if not self.messages:
+            return
+        path = filedialog.asksaveasfilename(
+            defaultextension=".txt",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+            initialfile=f"forge_conversation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+            title="Export Conversation",
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("FORGE Conversation Export\n")
+                f.write(f"Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write("=" * 60 + "\n\n")
+                for msg in self.messages:
+                    f.write(f"[{msg['agent']}] ({msg['role']})\n")
+                    f.write(f"{msg['content']}\n")
+                    f.write("-" * 40 + "\n")
+        except Exception as e:
+            import tkinter.messagebox as mb
+            mb.showerror("Export Failed", str(e))
+
