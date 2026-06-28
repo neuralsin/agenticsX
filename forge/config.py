@@ -1,9 +1,11 @@
 """
 FORGE Configuration — All user settings, paths, model config.
 Central config file for the entire FORGE application.
+v2: Adds AUDITOR, model registry, storage media, Stitch, AST, Git, RAG, TDD.
 """
 
 import os
+import json
 from pathlib import Path
 
 # ─── Paths ──────────────────────────────────────────────────────────────────────
@@ -14,8 +16,11 @@ PROJECTS_DIR = FORGE_DIR / "projects"
 LOGS_DIR = FORGE_DIR / "logs"
 STORAGE_DIR = FORGE_DIR / "storage"
 SESSIONS_DIR = STORAGE_DIR / "sessions"
+DOCS_DIR = FORGE_DIR / "docs"         # RAG Librarian docs folder
+CONFIG_FILE = FORGE_DIR / "model_config.json"  # Persistent model registry
 
-for d in [FORGE_DIR, MODELS_DIR, PROJECTS_DIR, LOGS_DIR, STORAGE_DIR, SESSIONS_DIR]:
+for d in [FORGE_DIR, MODELS_DIR, PROJECTS_DIR, LOGS_DIR, STORAGE_DIR,
+          SESSIONS_DIR, DOCS_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
 # ─── AirLLM Configuration ───────────────────────────────────────────────────────
@@ -32,7 +37,15 @@ OLLAMA_HOST = "http://localhost:11434"
 OLLAMA_PLANNER_MODEL = "deepseek-r1:8b"
 OLLAMA_DEBUGGER_MODEL = "deepseek-r1:8b"
 OLLAMA_VISION_MODEL = "qwen2.5-vl:7b"
+OLLAMA_TESTER_MODEL = "deepseek-r1:8b"   # TDD test generation
 OLLAMA_TIMEOUT = 120  # seconds
+
+# ─── Gemini (AUDITOR) Configuration ─────────────────────────────────────────────
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL = "gemini-2.5-flash"
+AUDITOR_TRIGGER = "on_disagreement"  # "on_disagreement" | "every_n_iterations" | "both"
+AUDITOR_EVERY_N = 3
 
 # ─── Context Budgets (tokens per agent per call) ────────────────────────────────
 
@@ -42,6 +55,8 @@ CONTEXT_BUDGETS = {
     "CODER": 8200,
     "DEBUGGER": 5400,
     "VISION": 900,
+    "AUDITOR": 6000,
+    "TESTER": 4000,
 }
 
 # ─── Loop & Safety Limits ───────────────────────────────────────────────────────
@@ -60,19 +75,63 @@ AGENT_COLORS = {
     "CODER":      "#059669",
     "DEBUGGER":   "#DC2626",
     "VISION":     "#D97706",
+    "AUDITOR":    "#EC4899",
+    "TESTER":     "#06B6D4",
     "USER":       "#FFFFFF",
     "SYSTEM":     "#6B7280",
 }
 
-# ─── Agent Model Mapping ────────────────────────────────────────────────────────
+# ─── Agent Model Mapping (default, overridable via model_config.json) ────────
 
-AGENT_MODELS = {
-    "SUPERVISOR": {"model": "Qwen3.6 27B (Q4_K_M)", "method": "airllm", "speed": "~3-5 tok/s"},
-    "PLANNER":    {"model": "DeepSeek-R1 8B (Q4_K_M)", "method": "ollama", "speed": "~15 tok/s"},
-    "CODER":      {"model": "Qwen3.6 27B (Q4_K_M)", "method": "airllm", "speed": "~3-5 tok/s"},
-    "DEBUGGER":   {"model": "DeepSeek-R1 8B (Q4_K_M)", "method": "ollama", "speed": "~12 tok/s"},
-    "VISION":     {"model": "Qwen2.5-VL 7B", "method": "ollama", "speed": "~8 tok/s"},
+DEFAULT_AGENT_MODELS = {
+    "SUPERVISOR": {
+        "provider": "airllm",
+        "model_id": "Qwen/Qwen3.6-27B-Instruct",
+        "display_name": "Qwen3.6 27B (Q4_K_M)",
+        "speed": "~3-5 tok/s",
+    },
+    "PLANNER": {
+        "provider": "ollama",
+        "model_id": "deepseek-r1:8b",
+        "display_name": "DeepSeek-R1 8B (Q4_K_M)",
+        "speed": "~15 tok/s",
+    },
+    "CODER": {
+        "provider": "airllm",
+        "model_id": "Qwen/Qwen3.6-27B-Instruct",
+        "display_name": "Qwen3.6 27B (Q4_K_M)",
+        "speed": "~3-5 tok/s",
+    },
+    "DEBUGGER": {
+        "provider": "ollama",
+        "model_id": "deepseek-r1:8b",
+        "display_name": "DeepSeek-R1 8B (Q4_K_M)",
+        "speed": "~12 tok/s",
+    },
+    "VISION": {
+        "provider": "ollama",
+        "model_id": "qwen2.5-vl:7b",
+        "display_name": "Qwen2.5-VL 7B",
+        "speed": "~8 tok/s",
+    },
+    "AUDITOR": {
+        "provider": "gemini",
+        "model_id": "gemini-2.5-flash",
+        "display_name": "Gemini 2.5 Flash",
+        "speed": "API",
+    },
+    "TESTER": {
+        "provider": "ollama",
+        "model_id": "deepseek-r1:8b",
+        "display_name": "DeepSeek-R1 8B (Q4_K_M)",
+        "speed": "~12 tok/s",
+    },
 }
+
+# ─── Storage Media Options ───────────────────────────────────────────────────────
+
+STORAGE_BACKENDS = ["sqlite", "json", "text"]
+DEFAULT_STORAGE = "sqlite"
 
 # ─── Hardware ────────────────────────────────────────────────────────────────────
 
@@ -81,55 +140,100 @@ TORCH_DEVICE = "cuda"  # falls back to cpu if unavailable
 # Set CUDA memory optimization
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
+# ─── Stitch MCP Integration ─────────────────────────────────────────────────────
+
+STITCH_ENABLED = True
+STITCH_DEFAULT_PROJECT_ID = ""  # User sets this per project
+
+# ─── Git Time Travel ────────────────────────────────────────────────────────────
+
+GIT_AUTO_COMMIT = True  # Auto-commit after each approved change
+GIT_COMMIT_PREFIX = "FORGE"  # Prefix for commit messages
+
+# ─── TDD Configuration ──────────────────────────────────────────────────────────
+
+TDD_ENABLED = True  # Enable test-driven development loop
+TDD_FRAMEWORK = "pytest"  # pytest | unittest
+TDD_AUTO_INSTALL = False  # Don't auto-install pytest
+
+# ─── RAG Librarian ───────────────────────────────────────────────────────────────
+
+RAG_ENABLED = True
+RAG_TOP_K = 3  # Number of doc snippets to inject
+RAG_MAX_TOKENS = 1500  # Max tokens for RAG context per call
+
+# ─── AST Indexer ─────────────────────────────────────────────────────────────────
+
+AST_ENABLED = True
+AST_SUPPORTED_EXTENSIONS = [".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".go", ".rs"]
+
 # ─── GUI Settings ────────────────────────────────────────────────────────────────
 
 WINDOW_TITLE = "FORGE — Multi-Agent AI Studio"
 WINDOW_GEOMETRY = "1600x900"
 WINDOW_MIN_SIZE = (1200, 700)
 
-# Theme colors
+# Obsidian Forge theme (from Stitch Design System project 5083174531589850372)
 THEME = {
-    "bg_primary":    "#0F0F14",
-    "bg_secondary":  "#1A1A24",
-    "bg_tertiary":   "#252534",
-    "bg_card":       "#1E1E2E",
-    "bg_input":      "#2A2A3C",
-    "border":        "#333348",
-    "border_light":  "#444460",
-    "text_primary":  "#E8E8F0",
-    "text_secondary":"#9898B0",
-    "text_muted":    "#6B6B88",
-    "accent":        "#7C3AED",
-    "accent_hover":  "#9055FF",
-    "success":       "#059669",
-    "warning":       "#D97706",
-    "error":         "#DC2626",
-    "info":          "#0891B2",
+    "bg_primary":    "#0A0A0B",   # obsidian-deep
+    "bg_secondary":  "#141416",   # obsidian-surface
+    "bg_tertiary":   "#201F20",   # surface-container
+    "bg_card":       "#1C1B1C",   # surface-container-low
+    "bg_input":      "#2A2A2B",   # surface-container-high
+    "border":        "#494454",   # outline-variant
+    "border_light":  "#958EA0",   # outline
+    "text_primary":  "#E5E2E3",   # on-surface
+    "text_secondary":"#CBC3D7",   # on-surface-variant
+    "text_muted":    "#958EA0",   # outline
+    "accent":        "#8B5CF6",   # cyber-violet
+    "accent_hover":  "#6D3BD7",   # inverse-primary
+    "success":       "#10B981",   # emerald
+    "warning":       "#D97706",   # amber-vision
+    "error":         "#DC2626",   # crimson-error
+    "info":          "#06B6D4",   # electric-cyan
+    "secondary":     "#4CD7F6",   # secondary (cyan)
+    "tertiary":      "#4EDEA3",   # tertiary (emerald bright)
+    "surface_variant": "#353436",
+    "primary_container": "#A078FF",
 }
 
-# Font configuration
+# Font configuration (from Stitch design system)
 FONTS = {
-    "heading":    ("Segoe UI", 16, "bold"),
-    "subheading": ("Segoe UI", 13, "bold"),
-    "body":       ("Segoe UI", 12),
-    "small":      ("Segoe UI", 10),
-    "tiny":       ("Segoe UI", 9),
-    "mono":       ("Cascadia Code", 11),
-    "mono_small": ("Cascadia Code", 10),
-    "mono_tiny":  ("Cascadia Code", 9),
+    "heading":    ("Inter", 18, "bold"),
+    "subheading": ("Inter", 14, "bold"),
+    "body":       ("Inter", 13),
+    "small":      ("Inter", 11),
+    "tiny":       ("Inter", 9),
+    "label_caps": ("Inter", 11, "bold"),  # for agent identifiers
+    "mono":       ("JetBrains Mono", 12),
+    "mono_small": ("JetBrains Mono", 10),
+    "mono_tiny":  ("JetBrains Mono", 9),
+    "telemetry":  ("JetBrains Mono", 10),
 }
 
 # ─── Render Modes ────────────────────────────────────────────────────────────────
 
-RENDER_MODES = ["esp32", "terminal", "web", "desktop", "none"]
+RENDER_MODES = ["screenshot", "terminal", "embedded_html", "esp32", "none"]
 DEFAULT_RENDER_MODE = "terminal"
 
-# ─── Project Types ───────────────────────────────────────────────────────────────
+# ─── Project Types (Generic — supports ANY software) ─────────────────────────────
 
 PROJECT_TYPES = [
-    ("ESP32 / Embedded (Python bridge)", "esp32"),
-    ("Python Desktop App", "desktop"),
-    ("Python Web App (Flask/FastAPI)", "web"),
+    ("Python Desktop App", "python_desktop"),
+    ("Python Web App (Flask/FastAPI/Django)", "python_web"),
+    ("Python CLI / Script", "python_cli"),
+    ("JavaScript / TypeScript (Node.js)", "js_node"),
+    ("Web Frontend (HTML/CSS/JS)", "web_frontend"),
+    ("ESP32 / Embedded (MicroPython)", "esp32"),
+    ("C / C++ Application", "cpp"),
+    ("Rust Application", "rust"),
+    ("Go Application", "go"),
     ("Existing Codebase (point to dir)", "existing"),
-    ("Custom (describe below)", "custom"),
+    ("Custom (describe in goal)", "custom"),
 ]
+
+# ─── Canvas Steering ─────────────────────────────────────────────────────────────
+
+CANVAS_STEERING_ENABLED = True
+CANVAS_BOX_COLOR = "#8B5CF6"  # cyber-violet for overlay boxes
+CANVAS_BOX_ALPHA = 0.3

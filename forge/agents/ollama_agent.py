@@ -35,7 +35,11 @@ class OllamaAgent(BaseAgent):
             return response["message"]["content"]
 
         except ImportError:
-            return self._simulate_response(messages)
+            return (
+                "[OLLAMA NOT INSTALLED] Install the ollama package:\n"
+                "  pip install ollama\n"
+                "Then start Ollama: ollama serve"
+            )
         except Exception as e:
             # Check if it's a connection error
             error_str = str(e).lower()
@@ -73,7 +77,7 @@ class OllamaAgent(BaseAgent):
             return response["message"]["content"]
 
         except ImportError:
-            return self._simulate_response([{"role": "user", "content": task}])
+            return "[OLLAMA NOT INSTALLED] pip install ollama"
         except Exception as e:
             return f"[OLLAMA VISION ERROR] {str(e)}"
 
@@ -101,47 +105,72 @@ class OllamaAgent(BaseAgent):
             return response["message"]["content"]
 
         except ImportError:
-            return self._simulate_response([{"role": "user", "content": task}])
+            return "[OLLAMA NOT INSTALLED] pip install ollama"
         except Exception as e:
             return f"[OLLAMA MULTI-IMAGE ERROR] {str(e)}"
 
-    def _simulate_response(self, messages: list[dict]) -> str:
+    def _handle_model_not_found(self, model_name: str) -> str:
         """
-        Simulation mode response when Ollama is not available.
-        Used for GUI development and testing without models.
+        Handle model not found — attempt auto-pull if configured,
+        otherwise return actionable error message.
         """
-        last_user_msg = ""
-        for msg in reversed(messages):
-            if msg["role"] == "user":
-                last_user_msg = msg["content"][:200]
-                break
-
-        return (
-            f"[SIMULATION MODE — Ollama not connected]\n"
-            f"Agent: {self.name}\n"
-            f"Model: {self.ollama_model}\n"
-            f"Received task: {last_user_msg}\n"
-            f"This is a simulated response. Start Ollama and pull "
-            f"the required model to enable real inference."
-        )
+        # Try to auto-pull the model
+        try:
+            import ollama
+            ollama.pull(model_name)
+            return ""  # Success — caller should retry
+        except Exception as pull_error:
+            return (
+                f"[OLLAMA MODEL NOT FOUND] Model '{model_name}' is not available.\n"
+                f"Auto-pull failed: {str(pull_error)}\n"
+                f"Manual fix: Run 'ollama pull {model_name}' in terminal.\n"
+                f"Or change the model in Settings > Model Config."
+            )
 
     @staticmethod
-    def check_ollama_available() -> bool:
+    def check_ollama_available() -> tuple[bool, str]:
         """Check if Ollama is running and accessible."""
         try:
             import ollama
-            ollama.list()
-            return True
-        except Exception:
-            return False
+            models = ollama.list()
+            model_count = len(models.get("models", []))
+            return True, f"Ollama running — {model_count} models available"
+        except ImportError:
+            return False, "ollama package not installed. Run: pip install ollama"
+        except Exception as e:
+            error_str = str(e).lower()
+            if "connection" in error_str or "refused" in error_str:
+                return False, "Ollama not running. Start with: ollama serve"
+            return False, f"Ollama error: {str(e)}"
 
     @staticmethod
-    def check_model_available(model_name: str) -> bool:
+    def check_model_available(model_name: str) -> tuple[bool, str]:
         """Check if a specific model is available in Ollama."""
         try:
             import ollama
             models = ollama.list()
             model_names = [m.get("name", "") for m in models.get("models", [])]
-            return any(model_name in name for name in model_names)
+            if any(model_name in name for name in model_names):
+                return True, f"Model '{model_name}' available"
+            return False, (
+                f"Model '{model_name}' not found. "
+                f"Run: ollama pull {model_name}"
+            )
+        except ImportError:
+            return False, "ollama package not installed"
+        except Exception as e:
+            return False, f"Check failed: {str(e)}"
+
+    @staticmethod
+    def list_available_models() -> list[str]:
+        """List all available Ollama models."""
+        try:
+            import ollama
+            models = ollama.list()
+            return [
+                m.get("name", "") or m.get("model", "")
+                for m in models.get("models", [])
+            ]
         except Exception:
-            return False
+            return []
+

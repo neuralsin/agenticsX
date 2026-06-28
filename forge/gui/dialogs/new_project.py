@@ -161,6 +161,27 @@ class NewProjectDialog(ctk.CTkToplevel):
             )
             rb.pack(anchor="w", pady=2, padx=(8, 0))
         
+        # ── Stitch Integration ──────────────────────────────────────────
+        ctk.CTkLabel(
+            form, text="Stitch Design Project ID (Optional)",
+            font=config.FONTS["subheading"],
+            text_color=config.THEME["text_primary"],
+        ).pack(anchor="w", pady=(12, 4))
+        
+        self.stitch_var = ctk.StringVar(value="")
+        self.stitch_entry = ctk.CTkEntry(
+            form,
+            textvariable=self.stitch_var,
+            placeholder_text="e.g. 5083174531589850372",
+            font=config.FONTS["body"],
+            fg_color=config.THEME["bg_input"],
+            border_color=config.THEME["border"],
+            text_color=config.THEME["text_primary"],
+            height=36,
+            corner_radius=8,
+        )
+        self.stitch_entry.pack(fill="x", pady=(0, 8))
+
         # ── Entry File ───────────────────────────────────────────
         ctk.CTkLabel(
             form, text="Entry File",
@@ -245,6 +266,7 @@ class NewProjectDialog(ctk.CTkToplevel):
             "type": self.type_var.get(),
             "render_mode": self.render_var.get(),
             "entry_file": self.entry_var.get().strip() or "main.py",
+            "stitch_project_id": self.stitch_var.get().strip(),
         }
         
         self.grab_release()

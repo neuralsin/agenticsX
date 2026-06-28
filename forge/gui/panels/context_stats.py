@@ -31,6 +31,7 @@ class ContextStatsPanel(ctk.CTkFrame):
             height=70,
         )
         self.pack_propagate(False)
+        self.on_timeline_requested = None
         
         # ── Row 1: Plan progress ─────────────────────────────────
         progress_row = ctk.CTkFrame(self, fg_color="transparent", height=28)
@@ -68,7 +69,18 @@ class ContextStatsPanel(ctk.CTkFrame):
         )
         self.step_dots.pack(side="left", padx=8)
         
-        # Right side: iteration counter
+        # Right side: iteration counter and timeline
+        self.timeline_btn = ctk.CTkButton(
+            progress_row, text="⏱ TIMELINE",
+            font=config.FONTS["tiny"],
+            fg_color="transparent",
+            hover_color=config.THEME["bg_input"],
+            text_color=config.THEME["info"],
+            width=70, height=20, corner_radius=4,
+            command=self._request_timeline
+        )
+        self.timeline_btn.pack(side="right", padx=(8, 0))
+        
         self.iter_label = ctk.CTkLabel(
             progress_row, text="Iter: 0/50",
             font=config.FONTS["tiny"],
@@ -79,17 +91,14 @@ class ContextStatsPanel(ctk.CTkFrame):
         # ── Row 2: Token meters + system stats ───────────────────
         stats_row = ctk.CTkFrame(self, fg_color="transparent", height=28)
         stats_row.pack(fill="x", padx=12, pady=(2, 4))
-        stats_row.grid_columnconfigure(0, weight=1)
-        stats_row.grid_columnconfigure(1, weight=1)
-        stats_row.grid_columnconfigure(2, weight=1)
-        stats_row.grid_columnconfigure(3, weight=1)
-        stats_row.grid_columnconfigure(4, weight=1)
-        stats_row.grid_columnconfigure(5, weight=0)
-        
+        for i in range(9):
+            stats_row.grid_columnconfigure(i, weight=1)
+        stats_row.grid_columnconfigure(7, weight=0)  # sys stats
+
         # Token meters for each agent
         self.token_meters = {}
-        agents = ["SUPERVISOR", "PLANNER", "CODER", "DEBUGGER", "VISION"]
-        
+        agents = ["SUPERVISOR", "PLANNER", "CODER", "DEBUGGER", "VISION", "AUDITOR", "TESTER"]
+
         for i, agent in enumerate(agents):
             meter = TokenMeter(
                 stats_row, agent,
@@ -98,9 +107,9 @@ class ContextStatsPanel(ctk.CTkFrame):
             meter.grid(row=0, column=i, sticky="ew", padx=2)
             self.token_meters[agent] = meter
         
-        # System stats (right side)
+        # System stats (right side, after 7 agent meters in cols 0-6)
         sys_frame = ctk.CTkFrame(stats_row, fg_color="transparent")
-        sys_frame.grid(row=0, column=5, padx=(12, 0))
+        sys_frame.grid(row=0, column=7, padx=(12, 0))
         
         self.db_label = ctk.CTkLabel(
             sys_frame, text="DB: 0.0MB",
@@ -240,3 +249,8 @@ class ContextStatsPanel(ctk.CTkFrame):
         
         # Schedule next update (every 5 seconds)
         self.after(5000, self._update_hardware_stats)
+
+    def _request_timeline(self):
+        """Trigger timeline callback."""
+        if self.on_timeline_requested:
+            self.on_timeline_requested()

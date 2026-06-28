@@ -91,14 +91,21 @@ class AirLLMAgent(BaseAgent):
     def _inference(self, messages: list[dict]) -> str:
         """Run inference using AirLLM with Qwen chat template."""
         model = self.load_model()
-        
+
         if model is None:
-            # Simulation mode — return a simulated response
-            return self._simulate_response(messages)
+            return (
+                "[AirLLM MODEL NOT LOADED] The AirLLM model could not be loaded.\n"
+                "Possible fixes:\n"
+                "  1. Install AirLLM: pip install airllm\n"
+                "  2. Install PyTorch with CUDA: pip install torch --index-url https://download.pytorch.org/whl/cu121\n"
+                "  3. Ensure sufficient disk space for model download (~15GB)\n"
+                "  4. Check GPU availability: nvidia-smi\n"
+                "  5. Or switch this agent to Ollama in Settings > Model Config"
+            )
 
         try:
             import torch
-            
+
             # Format as Qwen chat template
             prompt = self._format_chat(messages)
             tokens = model.tokenizer(prompt, return_tensors="pt")
@@ -135,22 +142,3 @@ class AirLLMAgent(BaseAgent):
         parts.append("<|im_start|>assistant\n")
         return "\n".join(parts)
 
-    def _simulate_response(self, messages: list[dict]) -> str:
-        """
-        Simulation mode response when AirLLM is not available.
-        Used for GUI development and testing without the actual model.
-        """
-        # Extract the last user message to understand the task
-        last_user_msg = ""
-        for msg in reversed(messages):
-            if msg["role"] == "user":
-                last_user_msg = msg["content"][:200]
-                break
-
-        return (
-            f"[SIMULATION MODE — AirLLM not loaded]\n"
-            f"Agent: {self.name}\n"
-            f"Received task: {last_user_msg}\n"
-            f"This is a simulated response. Install AirLLM and download "
-            f"the Qwen3.6-27B model to enable real inference."
-        )

@@ -22,6 +22,9 @@ from agents.planner import PlannerAgent
 from agents.coder import CoderAgent
 from agents.debugger import DebuggerAgent
 from agents.vision import VisionAgent
+from agents.auditor import AuditorAgent
+from agents.tester import TesterAgent
+from core.git_manager import GitManager
 
 import config
 
@@ -57,10 +60,18 @@ class AgentManager:
         self.coder = CoderAgent(ctx_manager, self.session_id)
         self.debugger = DebuggerAgent(ctx_manager, self.session_id)
         self.vision = VisionAgent(ctx_manager, self.session_id)
+        self.auditor = AuditorAgent(ctx_manager, self.session_id)
+        self.tester = TesterAgent(ctx_manager, self.session_id)
         self.all_agents = [
             self.supervisor, self.planner,
-            self.coder, self.debugger, self.vision
+            self.coder, self.debugger, self.vision,
+            self.auditor, self.tester
         ]
+
+        # Git Manager for time travel
+        self.git_manager = GitManager(project_path)
+        if config.GIT_AUTO_COMMIT:
+            self.git_manager.init_repo()
 
         # Event callbacks (GUI binds these)
         self.on_agent_status = None     # (agent_name, status) -> None
@@ -170,6 +181,16 @@ class AgentManager:
                 self._emit("on_iteration_start", self.iteration)
                 self._emit_stats()
 
+                # Auditor periodic check
+                if self.auditor.should_trigger(self.iteration, False):
+                    self._emit("on_message", "SYSTEM", "AUDITOR performing periodic review...", "system")
+                    proj_summary = self._scan_project()
+                    audit_res = self.auditor.periodic_review(proj_summary, "Periodic check", self.iteration)
+                    self._emit("on_message", "AUDITOR", f"Verdict: {audit_res['verdict']}\n{audit_res['summary']}", "assistant")
+                    if audit_res['verdict'] == "INDEPENDENT_FIX":
+                        steering = f"AUDITOR SUGGESTS: {audit_res['fix_suggestion']}"
+                        self.ctx.add_steering(self.session_id, steering, self.iteration)
+
                 # Check for user steering
                 steering = self.ctx.get_pending_steering(self.session_id)
                 if steering:
@@ -243,17 +264,38 @@ class AgentManager:
             self.running = False
 
     def _handle_code_step(self, step: dict):
-        """Handle a CREATE or MODIFY step."""
+        """Handle a CREATE or MODIFY step. Includes TDD test generation."""
         filename = step.get("file", "")
         description = step.get("description", "")
+        
+        test_context = ""
+        if config.TDD_ENABLED:
+            self._emit("on_message", "SYSTEM", "TESTER generating tests...", "system")
+            current_content = self._read_file(filename) or ""
+            proj_struct = self._scan_project()
+            tests = self.tester.generate_tests(description, filename, current_content, proj_struct)
+            
+            self._emit("on_message", "TESTER", 
+                       f"Generated {tests.get('test_count', 0)} tests in {tests.get('test_file')}\n"
+                       f"Description: {tests.get('description')}", "assistant")
+            
+            if tests.get("test_code"):
+                # Write test file
+                success, diff = self.diff_engine.write_file_safe(tests["test_file"], tests["test_code"])
+                if success:
+                    self._emit("on_file_changed", tests["test_file"], diff)
+                    test_context = f"\nTests to pass:\n{tests['test_code']}"
+
+        # Combine description with tests
+        full_desc = description + test_context
 
         if step["action"] == "CREATE":
             # Create new file
-            result = self.coder.create_file(description, filename)
+            result = self.coder.create_file(full_desc, filename)
         else:
             # Modify existing file
             current_content = self._read_file(filename) or ""
-            result = self.coder.implement(description, current_content, filename)
+            result = self.coder.implement(full_desc, current_content, filename)
 
         self._emit("on_message", "CODER",
                   f"File: {result['filename']}\n"
@@ -292,6 +334,9 @@ class AgentManager:
                         result["code"], self.iteration
                     )
                     self._emit("on_file_changed", result["filename"], diff)
+                    
+                    if config.GIT_AUTO_COMMIT:
+                        self.git_manager.commit_iteration(self.iteration, description, [result["filename"]])
                 else:
                     self._emit("on_message", "SYSTEM",
                               f"Failed to write file: {diff}", "system")
@@ -299,6 +344,25 @@ class AgentManager:
                 self._emit("on_message", "SUPERVISOR",
                           f"Code rejected. Issues: {review['issues']}",
                           "system")
+                
+                # AUDITOR check on disagreement
+                if self.auditor.should_trigger(self.iteration, True):
+                    self._emit("on_message", "SYSTEM", "AUDITOR reviewing disagreement...", "system")
+                    audit_res = self.auditor.audit_code(
+                        result["filename"], result["code"], review['verdict'], result["description"]
+                    )
+                    self._emit("on_message", "AUDITOR", 
+                               f"Verdict: {audit_res['verdict']}\n"
+                               f"Suggestion: {audit_res['fix_suggestion']}", 
+                               "assistant")
+                    if audit_res['verdict'] == "AGREE_WITH_CODER":
+                        self._emit("on_message", "SYSTEM", "AUDITOR overrules SUPERVISOR. Applying code.", "system")
+                        success, diff = self.diff_engine.write_file_safe(result["filename"], result["code"])
+                        if success:
+                            self.ctx.save_file_snapshot(self.session_id, result["filename"], result["code"], self.iteration)
+                            self._emit("on_file_changed", result["filename"], diff)
+                            if config.GIT_AUTO_COMMIT:
+                                self.git_manager.commit_iteration(self.iteration, description, [result["filename"]])
 
     def _handle_delete_step(self, step: dict):
         """Handle a DELETE step."""

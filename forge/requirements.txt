@@ -29,3 +29,7 @@ pygments>=2.18.0
 python-dotenv>=1.0.0
 watchdog>=4.0.0
 # zlib — stdlib
+
+# New in v2
+google-generativeai>=0.8.2
+pytest>=8.0.0

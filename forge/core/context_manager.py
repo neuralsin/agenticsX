@@ -255,11 +255,12 @@ class ContextManager:
                 messages.append(msg)
                 tokens_used += t
 
-        # 4. Relevant codebase slice
-        remaining = budget - tokens_used - 1000
-        if remaining > 200:
-            code_slice = self._get_relevant_files(session_id, current_task,
-                                                   token_limit=remaining)
+        # 4. Relevant Codebase Slice (using AST if enabled)
+        project_path = getattr(self, 'current_project_path', "")
+        
+        slice_budget = budget * 0.4
+        if tokens_used < budget * 0.8:
+            code_slice = self._get_relevant_files(session_id, current_task, int(slice_budget), project_path)
             if code_slice:
                 messages.append({"role": "user", "content": code_slice})
                 tokens_used += count_tokens(code_slice)
@@ -327,78 +328,22 @@ class ContextManager:
             conn.close()
 
     def _get_relevant_files(self, session_id: str, task: str,
-                            token_limit: int) -> str:
+                            token_limit: int, project_path: str = "") -> str:
         """
-        Use TF-IDF keyword matching between task description
-        and filenames/content to select most relevant files.
-        Returns compressed representation if over limit.
+        Retrieves relevant codebase context using ASTIndexer if enabled.
         """
-        conn = self._get_conn()
-        try:
-            rows = conn.execute(
-                """SELECT DISTINCT filepath, content, token_count 
-                   FROM file_snapshots
-                   WHERE session_id = ?
-                   ORDER BY timestamp DESC""",
-                (session_id,)
-            ).fetchall()
-
-            if not rows:
-                return ""
-
-            # Extract task keywords for relevance scoring
-            task_words = set(re.findall(r'\w+', task.lower()))
+        if config.AST_ENABLED and project_path:
+            from core.ast_indexer import ASTIndexer
+            indexer = ASTIndexer(project_path)
             
-            scored_files = []
-            seen_paths = set()
-            for row in rows:
-                filepath = row["filepath"]
-                if filepath in seen_paths:
-                    continue
-                seen_paths.add(filepath)
-                
-                # Decompress content
-                try:
-                    content = zlib.decompress(row["content"]).decode("utf-8")
-                except Exception:
-                    content = ""
-                
-                # Score by keyword overlap with filename and content
-                file_words = set(re.findall(r'\w+', filepath.lower()))
-                content_words = set(re.findall(r'\w+', content[:2000].lower()))
-                
-                # Filename match is weighted higher
-                filename_score = len(task_words & file_words) * 3
-                content_score = len(task_words & content_words)
-                total_score = filename_score + content_score
-                
-                scored_files.append((total_score, filepath, content, 
-                                    row["token_count"]))
-
-            # Sort by relevance score (descending)
-            scored_files.sort(key=lambda x: x[0], reverse=True)
-
-            # Build output within token limit
-            parts = []
-            tokens_so_far = 0
-            for score, filepath, content, tc in scored_files:
-                file_header = f"\n--- FILE: {filepath} ---\n"
-                header_tokens = count_tokens(file_header)
-                
-                available = token_limit - tokens_so_far - header_tokens
-                if available <= 50:
-                    break
-                
-                truncated = truncate_to_tokens(content, min(available, 
-                                               config.MAX_FILE_SIZE_TOKENS))
-                entry_tokens = count_tokens(truncated) + header_tokens
-                
-                parts.append(file_header + truncated)
-                tokens_so_far += entry_tokens
-
-            return "\n".join(parts) if parts else ""
-        finally:
-            conn.close()
+            context = indexer.get_symbol_map() + "\n\n"
+            tokens = count_tokens(context)
+            
+            if token_limit - tokens > 500:
+                context += indexer.get_relevant_symbols(task, token_limit - tokens)
+            
+            return context
+        return ""
 
     def _get_latest_exec(self, session_id: str) -> str:
         """Get the latest execution result as formatted text."""
@@ -447,7 +392,7 @@ class ContextManager:
             conn.close()
 
     def get_pending_steering(self, session_id: str) -> str:
-        """Get all unapplied steering inputs, mark them as applied."""
+        """Get all pending steering inputs, mark them as applied."""
         conn = self._get_conn()
         try:
             rows = conn.execute(
@@ -472,6 +417,50 @@ class ContextManager:
             return "\n".join(row["content"] for row in rows)
         finally:
             conn.close()
+
+    # ─── Export & Import ────────────────────────────────────────────────────────
+
+    def export_session(self, session_id: str, export_path: str) -> bool:
+        """Export session to a JSON file."""
+        import json
+        messages = self.get_all_messages(session_id)
+        try:
+            os.makedirs(os.path.dirname(export_path), exist_ok=True)
+            with open(export_path, "w", encoding="utf-8") as f:
+                json.dump({"session_id": session_id, "messages": messages}, f, indent=2)
+            return True
+        except Exception:
+            return False
+
+    def import_session(self, session_id: str, import_path: str) -> bool:
+        """Import session from a JSON file."""
+        import json
+        try:
+            with open(import_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            
+            if "messages" not in data:
+                return False
+                
+            conn = self._get_conn()
+            try:
+                for msg in data["messages"]:
+                    conn.execute(
+                        """INSERT INTO messages 
+                           (session_id, agent_name, role, content, token_count, 
+                            timestamp, iteration, importance)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (session_id, msg["agent_name"], msg["role"], 
+                         msg["content"], msg.get("token_count", 0), 
+                         msg["timestamp"], msg.get("iteration", 0), 
+                         msg.get("importance", 5))
+                    )
+                conn.commit()
+                return True
+            finally:
+                conn.close()
+        except Exception:
+            return False
 
     def get_steering_history(self, session_id: str) -> list[dict]:
         """Get all steering inputs for a session."""

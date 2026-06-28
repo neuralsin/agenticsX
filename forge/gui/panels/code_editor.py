@@ -325,8 +325,27 @@ class CodeEditorPanel(ctk.CTkFrame):
         self.file_tree.refresh_from_path(project_path)
 
     def _on_file_selected(self, filepath: str):
-        """Handle file selection from tree."""
-        pass  # Will be wired to load file content
+        """Handle file selection from tree — load and display the file content."""
+        if not filepath or not os.path.isfile(filepath):
+            return
+
+        try:
+            with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+        except (IOError, OSError):
+            self.diff_view.set_code(
+                f"[Cannot read file: {filepath}]",
+                os.path.basename(filepath)
+            )
+            return
+
+        # Limit very large files to prevent UI freeze
+        if len(content) > 100000:
+            content = content[:100000] + "\n\n... [truncated — file too large] ..."
+
+        filename = os.path.basename(filepath)
+        self.diff_view.set_code(content, filename)
+        self.source_label.configure(text=filepath)
 
     def _on_apply(self):
         """Handle APPLY button click."""

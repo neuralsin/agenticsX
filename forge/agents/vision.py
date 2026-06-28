@@ -38,7 +38,7 @@ class VisionAgent(OllamaAgent):
     """
 
     name = "VISION"
-    model = config.AGENT_MODELS["VISION"]["model"]
+
     color = config.AGENT_COLORS["VISION"]
     ollama_model = config.OLLAMA_VISION_MODEL
 

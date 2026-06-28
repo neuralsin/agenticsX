@@ -42,7 +42,7 @@ class CoderAgent(AirLLMAgent):
     """
 
     name = "CODER"
-    model = config.AGENT_MODELS["CODER"]["model"]
+
     color = config.AGENT_COLORS["CODER"]
 
     def __init__(self, context_manager, session_id):

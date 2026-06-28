@@ -41,7 +41,7 @@ class PlannerAgent(OllamaAgent):
     """
 
     name = "PLANNER"
-    model = config.AGENT_MODELS["PLANNER"]["model"]
+
     color = config.AGENT_COLORS["PLANNER"]
     ollama_model = config.OLLAMA_PLANNER_MODEL
 

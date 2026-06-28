@@ -45,7 +45,7 @@ class SupervisorAgent(AirLLMAgent):
     """
     
     name = "SUPERVISOR"
-    model = config.AGENT_MODELS["SUPERVISOR"]["model"]
+
     color = config.AGENT_COLORS["SUPERVISOR"]
 
     def __init__(self, context_manager, session_id):

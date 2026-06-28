@@ -44,7 +44,7 @@ class DebuggerAgent(OllamaAgent):
     """
 
     name = "DEBUGGER"
-    model = config.AGENT_MODELS["DEBUGGER"]["model"]
+
     color = config.AGENT_COLORS["DEBUGGER"]
     ollama_model = config.OLLAMA_DEBUGGER_MODEL
 

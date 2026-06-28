@@ -30,6 +30,12 @@ class SimulatorPanel(ctk.CTkFrame):
         self.frame_history = []  # List of screenshot paths
         self.on_screenshot = None
         self.on_mode_change = None
+        self.on_canvas_steer = None  # (x1, y1, x2, y2) callback
+        
+        self._start_x = 0
+        self._start_y = 0
+        self._rect_id = None
+        self._orig_img_size = None
         
         # ── Header ───────────────────────────────────────────────
         header = ctk.CTkFrame(
@@ -90,6 +96,12 @@ class SimulatorPanel(ctk.CTkFrame):
             highlightthickness=0,
         )
         self.render_canvas.pack(fill="both", expand=True, padx=2, pady=2)
+        
+        # Bind canvas steering events
+        if config.CANVAS_STEERING_ENABLED:
+            self.render_canvas.bind("<ButtonPress-1>", self._on_canvas_press)
+            self.render_canvas.bind("<B1-Motion>", self._on_canvas_drag)
+            self.render_canvas.bind("<ButtonRelease-1>", self._on_canvas_release)
         
         # Default content — show mode info
         self._show_placeholder()
@@ -162,23 +174,31 @@ class SimulatorPanel(ctk.CTkFrame):
         """Display an image in the render area."""
         try:
             img = Image.open(image_path)
+            self._orig_img_size = img.size
             
             # Fit to canvas size
             canvas_w = self.render_canvas.winfo_width() or 300
             canvas_h = self.render_canvas.winfo_height() or 200
             
+            # Keep aspect ratio
             img.thumbnail((canvas_w - 8, canvas_h - 8), Image.Resampling.LANCZOS)
-            
+            self._displayed_size = img.size
             self._current_photo = ImageTk.PhotoImage(img)
             
             self.render_canvas.delete("all")
+            
+            # Calculate offsets to center the image
+            self._img_x = (canvas_w - self._displayed_size[0]) // 2
+            self._img_y = (canvas_h - self._displayed_size[1]) // 2
+            
             self.render_canvas.create_image(
-                canvas_w // 2, canvas_h // 2,
+                self._img_x, self._img_y,
                 image=self._current_photo,
-                anchor="center",
+                anchor="nw",
             )
         except Exception:
             self._show_placeholder()
+            self._orig_img_size = None
 
     def show_terminal_output(self, output: str):
         """Display terminal output in the render area."""
@@ -273,3 +293,69 @@ class SimulatorPanel(ctk.CTkFrame):
         """Clear the render display."""
         self.render_canvas.delete("all")
         self._show_placeholder()
+        self._orig_img_size = None
+
+    # ─── Canvas Steering ────────────────────────────────────────────────────────
+    
+    def _on_canvas_press(self, event):
+        """Start drawing steering box."""
+        if not self._orig_img_size:
+            return
+        self._start_x = event.x
+        self._start_y = event.y
+        if self._rect_id:
+            self.render_canvas.delete(self._rect_id)
+        self._rect_id = self.render_canvas.create_rectangle(
+            self._start_x, self._start_y, self._start_x, self._start_y,
+            outline=config.CANVAS_BOX_COLOR, width=2, dash=(4, 4)
+        )
+        
+    def _on_canvas_drag(self, event):
+        """Update steering box size."""
+        if not self._rect_id:
+            return
+        self.render_canvas.coords(
+            self._rect_id,
+            self._start_x, self._start_y, event.x, event.y
+        )
+        
+    def _on_canvas_release(self, event):
+        """Finish steering box and trigger callback."""
+        if not self._rect_id or not self._orig_img_size:
+            return
+            
+        x1 = min(self._start_x, event.x)
+        y1 = min(self._start_y, event.y)
+        x2 = max(self._start_x, event.x)
+        y2 = max(self._start_y, event.y)
+        
+        # Don't trigger for tiny clicks
+        if (x2 - x1) < 10 and (y2 - y1) < 10:
+            self.render_canvas.delete(self._rect_id)
+            self._rect_id = None
+            return
+            
+        # Map to original image coordinates
+        disp_w, disp_h = self._displayed_size
+        orig_w, orig_h = self._orig_img_size
+        
+        # Remove offset
+        x1 = max(0, x1 - self._img_x)
+        y1 = max(0, y1 - self._img_y)
+        x2 = min(disp_w, x2 - self._img_x)
+        y2 = min(disp_h, y2 - self._img_y)
+        
+        # Scale
+        scale_x = orig_w / disp_w if disp_w > 0 else 1.0
+        scale_y = orig_h / disp_h if disp_h > 0 else 1.0
+        
+        orig_x1 = int(x1 * scale_x)
+        orig_y1 = int(y1 * scale_y)
+        orig_x2 = int(x2 * scale_x)
+        orig_y2 = int(y2 * scale_y)
+        
+        # Re-draw solid box to show it registered
+        self.render_canvas.itemconfig(self._rect_id, dash=(), width=2)
+        
+        if self.on_canvas_steer:
+            self.on_canvas_steer(orig_x1, orig_y1, orig_x2, orig_y2)

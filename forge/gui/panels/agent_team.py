@@ -22,9 +22,14 @@ class AgentCard(ctk.CTkFrame):
 
     def __init__(self, parent, agent_name: str, **kwargs):
         super().__init__(parent, **kwargs)
-        
+
         self.agent_name = agent_name
-        self.agent_info = config.AGENT_MODELS.get(agent_name, {})
+        # Pull info from the nested DEFAULT_AGENT_MODELS dict
+        _info = config.DEFAULT_AGENT_MODELS.get(agent_name, {})
+        self.agent_info = {
+            "model": _info.get("display_name", _info.get("model_id", "Unknown")),
+            "speed": _info.get("speed", ""),
+        }
         self.agent_color = config.AGENT_COLORS.get(agent_name, "#7C3AED")
         self.expanded = False
         self.tokens_history = []
@@ -264,9 +269,12 @@ class AgentTeamPanel(ctk.CTkFrame):
         )
         self.cards_container.pack(fill="both", expand=True, padx=8, pady=(0, 8))
         
-        # Create agent cards
+        # Create agent cards (all 7 agents)
         self.agent_cards = {}
-        agent_order = ["SUPERVISOR", "PLANNER", "CODER", "DEBUGGER", "VISION"]
+        agent_order = [
+            "SUPERVISOR", "PLANNER", "CODER",
+            "DEBUGGER", "VISION", "AUDITOR", "TESTER"
+        ]
         
         for agent_name in agent_order:
             card = AgentCard(
