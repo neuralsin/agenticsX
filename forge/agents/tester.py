@@ -2,12 +2,12 @@
 FORGE TESTER Agent — TDD test generation agent.
 Generates pytest test cases BEFORE the CODER writes implementation.
 The CODER then writes code to pass these tests.
-Uses Ollama (DeepSeek-R1 8B) for fast test generation.
+Uses Qwen3.6 27B via AirLLM (layer-sliced, fits 6GB VRAM).
 """
 
 import re
 
-from agents.ollama_agent import OllamaAgent
+from agents.airllm_agent import AirLLMAgent
 import config
 
 
@@ -38,9 +38,10 @@ Rules:
 """
 
 
-class TesterAgent(OllamaAgent):
+class TesterAgent(AirLLMAgent):
     """
     TESTER agent — generates pytest tests before implementation.
+    Uses Qwen3.6 27B via AirLLM (layer-sliced, 6GB VRAM safe).
     Part of the TDD loop: TESTER → CODER → RUN → DEBUGGER.
     """
 
@@ -49,11 +50,6 @@ class TesterAgent(OllamaAgent):
 
     def __init__(self, context_manager, session_id: str):
         super().__init__(context_manager, session_id)
-        from core.model_registry import get_registry
-        registry = get_registry()
-        self.ollama_model = registry.get_model_id("TESTER")
-        if not self.ollama_model:
-            self.ollama_model = config.OLLAMA_TESTER_MODEL
 
     def generate_tests(self, step_description: str,
                        filename: str,

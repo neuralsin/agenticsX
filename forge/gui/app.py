@@ -163,17 +163,27 @@ class ForgeApp:
         self.rec_indicator.pack(side="right", padx=4, pady=7)
         self.rec_indicator.pack_forget()  # Hidden until running
 
-        # ── Main Content Area ────────────────────────────────────
+        # ── Steering Bar (bottom input) — MUST be packed BEFORE main_content ──
+        # tkinter rule: side='bottom' elements must be packed before expand=True elements
+        self.steering_bar = SteeringBar(self.root)
+        self.steering_bar.pack(fill="x", side="bottom")
+
+        # ── Context Stats Bar — also packed before main_content ──────────────
+        self.stats_panel = ContextStatsPanel(self.root)
+        self.stats_panel.pack(fill="x", side="bottom")
+        self.stats_panel.on_timeline_requested = self._on_timeline_requested
+
+        # ── Main Content Area ────────────────────────────────────────────────
         main_content = ctk.CTkFrame(
             self.root, fg_color=config.THEME["bg_primary"],
             corner_radius=0,
         )
         main_content.pack(fill="both", expand=True)
 
-        # Configure 3-column grid
-        main_content.grid_columnconfigure(0, weight=0, minsize=260)
-        main_content.grid_columnconfigure(1, weight=3, minsize=400)
-        main_content.grid_columnconfigure(2, weight=2, minsize=300)
+        # Configure 3-column grid — Conversation Hub gets the most space
+        main_content.grid_columnconfigure(0, weight=0, minsize=220)
+        main_content.grid_columnconfigure(1, weight=5, minsize=500)
+        main_content.grid_columnconfigure(2, weight=2, minsize=280)
         main_content.grid_rowconfigure(0, weight=1)
 
         # ── Left Panel: Agent Team ───────────────────────────────
@@ -220,15 +230,6 @@ class ForgeApp:
         self.sim_panel = SimulatorPanel(right_panel)
         self.sim_panel.grid(row=1, column=0, sticky="nsew")
         self.sim_panel.on_canvas_steer = self._handle_canvas_steer
-
-        # ── Steering Bar (bottom input) ──────────────────────────
-        self.steering_bar = SteeringBar(self.root)
-        self.steering_bar.pack(fill="x", side="bottom")
-
-        # ── Context Stats Bar ────────────────────────────────────
-        self.stats_panel = ContextStatsPanel(self.root)
-        self.stats_panel.pack(fill="x", side="bottom")
-        self.stats_panel.on_timeline_requested = self._on_timeline_requested
 
         # ── Wire up steering callbacks ───────────────────────────
         self.steering_bar.on_start = self._on_start_goal

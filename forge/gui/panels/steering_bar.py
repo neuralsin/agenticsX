@@ -21,7 +21,7 @@ class SteeringBar(ctk.CTkFrame):
         self.configure(
             fg_color=config.THEME["bg_tertiary"],
             corner_radius=0,
-            height=52,
+            height=64,
         )
         self.pack_propagate(False)
         
@@ -50,14 +50,14 @@ class SteeringBar(ctk.CTkFrame):
         
         self.start_btn = ctk.CTkButton(
             controls, text="▶ START",
-            font=config.FONTS["small"],
+            font=config.FONTS["subheading"],
             fg_color=config.THEME["success"],
             hover_color="#047857",
-            width=80, height=32,
-            corner_radius=6,
+            width=120, height=40,
+            corner_radius=8,
             command=self._on_start,
         )
-        self.start_btn.pack(side="left", padx=2)
+        self.start_btn.pack(side="left", padx=6)
         
         self.pause_btn = ctk.CTkButton(
             controls, text="‖ PAUSE",
@@ -96,14 +96,15 @@ class SteeringBar(ctk.CTkFrame):
         
         self.text_input = ctk.CTkEntry(
             input_frame,
-            placeholder_text="Type to inject steering... (Shift+Enter to send)",
+            placeholder_text="⚡ TYPE YOUR GOAL HERE, then press ENTER or ▶ START ⚡",
             font=config.FONTS["body"],
             fg_color=config.THEME["bg_input"],
-            border_color=config.THEME["border"],
+            border_color=config.THEME["accent"],
             text_color=config.THEME["text_primary"],
             placeholder_text_color=config.THEME["text_muted"],
-            height=32,
+            height=40,
             corner_radius=8,
+            border_width=2,
         )
         self.text_input.pack(fill="x", expand=True)
         

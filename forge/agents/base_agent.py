@@ -11,6 +11,10 @@ import threading
 from core.context_manager import ContextManager
 from core.token_counter import count_tokens
 
+# Global lock to serialize ALL agent inference calls
+# Prevents multiple models from loading into VRAM simultaneously and crashing the system
+_MODEL_EXECUTION_LOCK = threading.Lock()
+
 
 class BaseAgent(ABC):
     """
@@ -84,9 +88,10 @@ class BaseAgent(ABC):
                     messages.append({"role": "user", "content": ctx_msg})
                     tokens_in += count_tokens(ctx_msg)
 
-            # Run inference
+            # Run inference sequentially to prevent overloading
             t0 = time.time()
-            response = self._inference(messages)
+            with _MODEL_EXECUTION_LOCK:
+                response = self._inference(messages)
             elapsed = time.time() - t0
             self.last_response_time = elapsed
 

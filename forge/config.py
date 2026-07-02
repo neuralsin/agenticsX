@@ -7,6 +7,14 @@ v2: Adds AUDITOR, model registry, storage media, Stitch, AST, Git, RAG, TDD.
 import os
 import json
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Load .env file if it exists in the current working directory
+load_dotenv()
+
+# Disable Hugging Face cache symlinks on Windows to prevent WinError 1314 (Privilege Not Held)
+# This allows downloads to succeed without requiring Admin rights or Developer Mode.
+os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
 
 # ─── User Settings File (persists path overrides) ───────────────────────────────
 
@@ -78,7 +86,7 @@ for _d in [FORGE_DIR, MODELS_DIR, PROJECTS_DIR, LOGS_DIR,
 
 # ─── AirLLM Configuration ───────────────────────────────────────────────────────
 
-AIRLLM_MODEL_ID = "Qwen/Qwen3.6-27B-Instruct"
+AIRLLM_MODEL_ID = "Qwen/Qwen3.6-27B"
 AIRLLM_COMPRESSION = "4bit"
 AIRLLM_MAX_NEW_TOKENS = 2048
 AIRLLM_TEMPERATURE = 0.2
@@ -87,11 +95,13 @@ AIRLLM_REPETITION_PENALTY = 1.1
 # ─── Ollama Configuration ───────────────────────────────────────────────────────
 
 OLLAMA_HOST = "http://localhost:11434"
-OLLAMA_PLANNER_MODEL = "deepseek-r1:8b"
-OLLAMA_DEBUGGER_MODEL = "deepseek-r1:8b"
-OLLAMA_VISION_MODEL = "qwen2.5-vl:7b"
-OLLAMA_TESTER_MODEL = "deepseek-r1:8b"   # TDD test generation
-OLLAMA_TIMEOUT = 120  # seconds
+# Qwen 3.6 27B is the unified model for ALL Ollama agents.
+# It is natively multimodal (text + vision) and tops coding benchmarks.
+OLLAMA_PLANNER_MODEL = "qwen3.6:27b"
+OLLAMA_DEBUGGER_MODEL = "qwen3.6:27b"
+OLLAMA_VISION_MODEL = "llava"  # 7B model fits in VRAM for multimodal QA
+OLLAMA_TESTER_MODEL = "qwen3.6:27b"  # TDD test generation
+OLLAMA_TIMEOUT = 180  # seconds (27B needs slightly more time)
 
 # ─── Gemini (AUDITOR) Configuration ─────────────────────────────────────────────
 
@@ -139,33 +149,33 @@ AGENT_COLORS = {
 DEFAULT_AGENT_MODELS = {
     "SUPERVISOR": {
         "provider": "airllm",
-        "model_id": "Qwen/Qwen3.6-27B-Instruct",
-        "display_name": "Qwen3.6 27B (Q4_K_M)",
+        "model_id": "Qwen/Qwen3.6-27B",
+        "display_name": "Qwen3.6 27B (AirLLM)",
         "speed": "~3-5 tok/s",
     },
     "PLANNER": {
-        "provider": "ollama",
-        "model_id": "deepseek-r1:8b",
-        "display_name": "DeepSeek-R1 8B (Q4_K_M)",
-        "speed": "~15 tok/s",
+        "provider": "airllm",
+        "model_id": "Qwen/Qwen3.6-27B",
+        "display_name": "Qwen3.6 27B (AirLLM)",
+        "speed": "~3-5 tok/s",
     },
     "CODER": {
         "provider": "airllm",
-        "model_id": "Qwen/Qwen3.6-27B-Instruct",
-        "display_name": "Qwen3.6 27B (Q4_K_M)",
+        "model_id": "Qwen/Qwen3.6-27B",
+        "display_name": "Qwen3.6 27B (AirLLM)",
         "speed": "~3-5 tok/s",
     },
     "DEBUGGER": {
-        "provider": "ollama",
-        "model_id": "deepseek-r1:8b",
-        "display_name": "DeepSeek-R1 8B (Q4_K_M)",
-        "speed": "~12 tok/s",
+        "provider": "airllm",
+        "model_id": "Qwen/Qwen3.6-27B",
+        "display_name": "Qwen3.6 27B (AirLLM)",
+        "speed": "~3-5 tok/s",
     },
     "VISION": {
         "provider": "ollama",
-        "model_id": "qwen2.5-vl:7b",
-        "display_name": "Qwen2.5-VL 7B",
-        "speed": "~8 tok/s",
+        "model_id": "llava",
+        "display_name": "LLaVA 7B (Ollama)",
+        "speed": "~15 tok/s",
     },
     "AUDITOR": {
         "provider": "gemini",
@@ -174,10 +184,10 @@ DEFAULT_AGENT_MODELS = {
         "speed": "API",
     },
     "TESTER": {
-        "provider": "ollama",
-        "model_id": "deepseek-r1:8b",
-        "display_name": "DeepSeek-R1 8B (Q4_K_M)",
-        "speed": "~12 tok/s",
+        "provider": "airllm",
+        "model_id": "Qwen/Qwen3.6-27B",
+        "display_name": "Qwen3.6 27B (AirLLM)",
+        "speed": "~3-5 tok/s",
     },
 }
 

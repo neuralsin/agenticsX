@@ -1,5 +1,5 @@
 """
-VISION — Qwen2.5-VL 7B via Ollama
+VISION — LLaVA 7B via Ollama
 Role: Receives a screenshot of the running project output.
       Reports what it sees vs what was expected.
       Identifies UI/visual bugs, layout issues, missing elements.
@@ -34,7 +34,7 @@ ITERATION_VERDICT: CONTINUE|DONE|CHANGE_APPROACH
 class VisionAgent(OllamaAgent):
     """
     VISION agent — analyzes screenshots and provides visual QA.
-    Uses Qwen2.5-VL 7B for multimodal (text + image) analysis.
+    Uses LLaVA 7B via Ollama for multimodal analysis.
     """
 
     name = "VISION"

@@ -1,12 +1,12 @@
 """
-PLANNER — DeepSeek-R1 8B via Ollama
+PLANNER — Qwen3.6 27B via AirLLM (layer-sliced, fits 6GB VRAM)
 Role: Receives a high-level goal, outputs a numbered step-by-step execution plan.
       Uses chain-of-thought reasoning to think through dependencies and order.
       Re-plans when SUPERVISOR signals a direction change.
 """
 
 import re
-from agents.ollama_agent import OllamaAgent
+from agents.airllm_agent import AirLLMAgent
 import config
 
 
@@ -41,16 +41,15 @@ VERIFY_BY: [how to know this step succeeded]
 """
 
 
-class PlannerAgent(OllamaAgent):
+class PlannerAgent(AirLLMAgent):
     """
     PLANNER agent — breaks down goals into ordered implementation steps.
-    Uses DeepSeek-R1 8B for fast chain-of-thought reasoning.
+    Uses Qwen3.6 27B via AirLLM (layer-sliced, 6GB VRAM safe).
     """
 
     name = "PLANNER"
 
     color = config.AGENT_COLORS["PLANNER"]
-    ollama_model = config.OLLAMA_PLANNER_MODEL
 
     def __init__(self, context_manager, session_id):
         super().__init__(context_manager, session_id)

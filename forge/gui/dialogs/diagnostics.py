@@ -339,7 +339,18 @@ class DiagnosticsDialog(ctk.CTkToplevel):
             self._update_check("gpu_vram", False,
                                "pynvml not installed — pip install pynvml")
         except Exception as e:
-            self._update_check("gpu_vram", False, f"GPU check failed: {e}")
+            # Fallback to PyTorch if NVML fails (e.g. permissions)
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    name = torch.cuda.get_device_name(0)
+                    total_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                    self._update_check("gpu_vram", True,
+                                       f"{name} — Total: {total_gb:.1f}GB (Detailed VRAM info requires admin)")
+                else:
+                    self._update_check("gpu_vram", False, f"GPU check failed: {e}")
+            except Exception:
+                self._update_check("gpu_vram", False, f"GPU check failed: {e}")
 
     def _check_ram(self):
         try:

@@ -34,34 +34,25 @@ _MODEL_CATALOG = {
             "desc": "Lighter alternative. Faster but less capable for complex tasks.",
             "recommended": False,
         },
-        {
-            "id": "Qwen/Qwen2.5-7B-GGUF",
-            "name": "Qwen 2.5 7B",
-            "size": "~4 GB",
-            "vram": "~3 GB",
-            "engine": "AirLLM",
-            "desc": "Smallest AirLLM option. Fast inference, limited reasoning.",
-            "recommended": False,
-        },
     ],
     # Ollama models
     "ollama": [
+        {
+            "id": "qwen3.6:27b",
+            "name": "Qwen 3.6 27B ⭐ (Text + Vision)",
+            "size": "~17 GB",
+            "vram": "~15-18 GB (or CPU offload)",
+            "engine": "Ollama",
+            "desc": "Top-ranked agentic coder. Natively multimodal — handles text AND vision. Replaces all previous models.",
+            "recommended": True,
+        },
         {
             "id": "deepseek-r1:8b",
             "name": "DeepSeek-R1 8B",
             "size": "~4.9 GB",
             "vram": "~5 GB (or CPU)",
             "engine": "Ollama",
-            "desc": "Strong reasoning model for PLANNER, DEBUGGER, TESTER.",
-            "recommended": True,
-        },
-        {
-            "id": "deepseek-r1:14b",
-            "name": "DeepSeek-R1 14B",
-            "size": "~8.9 GB",
-            "vram": "~9 GB",
-            "engine": "Ollama",
-            "desc": "Larger reasoning variant. Needs more VRAM.",
+            "desc": "Strong reasoning model. Good fallback if 27B is too slow.",
             "recommended": False,
         },
         {
@@ -70,37 +61,28 @@ _MODEL_CATALOG = {
             "size": "~4.4 GB",
             "vram": "~5 GB",
             "engine": "Ollama",
-            "desc": "Code-specialized model, good for DEBUGGER.",
-            "recommended": False,
-        },
-        {
-            "id": "codellama:7b",
-            "name": "Code Llama 7B",
-            "size": "~3.8 GB",
-            "vram": "~4 GB",
-            "engine": "Ollama",
-            "desc": "Meta's code-focused model.",
+            "desc": "Code-specialized model, compact alternative for DEBUGGER.",
             "recommended": False,
         },
     ],
-    # Vision models (Ollama)
+    # Vision models — qwen3.6 handles vision natively, but listing fallbacks too
     "vision": [
+        {
+            "id": "qwen3.6:27b",
+            "name": "Qwen 3.6 27B ⭐ (Native Multimodal)",
+            "size": "~17 GB",
+            "vram": "~15-18 GB",
+            "engine": "Ollama",
+            "desc": "Natively multimodal — text + image reasoning. Best choice for VISION agent.",
+            "recommended": True,
+        },
         {
             "id": "qwen2.5-vl:7b",
             "name": "Qwen 2.5 VL 7B",
             "size": "~5.1 GB",
             "vram": "~5.5 GB",
             "engine": "Ollama",
-            "desc": "Vision-language model for screenshot analysis.",
-            "recommended": True,
-        },
-        {
-            "id": "llava:7b",
-            "name": "LLaVA 7B",
-            "size": "~4.5 GB",
-            "vram": "~5 GB",
-            "engine": "Ollama",
-            "desc": "Older vision model, still capable.",
+            "desc": "Compact vision model. Good fallback if 27B is too slow.",
             "recommended": False,
         },
     ],
@@ -204,6 +186,14 @@ class ModelPickerDialog(ctk.CTkToplevel):
         self.resizable(True, True)
         self.minsize(650, 500)
 
+        # Check installed Ollama models via API ping
+        self._installed_ollama = []
+        try:
+            from agents.ollama_agent import OllamaAgent
+            self._installed_ollama = OllamaAgent.list_available_models()
+        except Exception:
+            pass
+
         self._selections: dict[str, str] = {}
         self._build_ui()
 
@@ -259,15 +249,28 @@ class ModelPickerDialog(ctk.CTkToplevel):
             text_color=config.THEME["text_secondary"],
         ).pack(side="left", padx=12, pady=4)
 
-        # Scrollable agent list
+        # Scrollable agent list (Tabview)
+        self.tabview = ctk.CTkTabview(self, fg_color="transparent",
+                                      segmented_button_selected_color=config.THEME["accent"],
+                                      segmented_button_selected_hover_color=config.THEME["accent_hover"],
+                                      segmented_button_unselected_color=config.THEME["bg_tertiary"])
+        self.tabview.pack(fill="both", expand=True, padx=12, pady=4)
+        
+        tab_mapping = self.tabview.add("Agent Model Mapping")
+        tab_installer = self.tabview.add("Model & CUDA Installer")
+
+        # Tab 1: Agent Mapping
         scroll = ctk.CTkScrollableFrame(
-            self, fg_color="transparent",
+            tab_mapping, fg_color="transparent",
             scrollbar_button_color=config.THEME["border"],
         )
-        scroll.pack(fill="both", expand=True, padx=12, pady=8)
+        scroll.pack(fill="both", expand=True, padx=0, pady=0)
 
         for mapping in _AGENT_MODEL_MAP:
             self._add_agent_row(scroll, mapping)
+
+        # Tab 2: Model & CUDA Installer
+        self._build_installer_tab(tab_installer)
 
         # Bottom buttons
         btn_row = ctk.CTkFrame(self, fg_color="transparent")
@@ -388,6 +391,143 @@ class ModelPickerDialog(ctk.CTkToplevel):
                 font=config.FONTS["tiny"],
                 text_color=config.THEME["info"],
             ).pack(side="right", padx=8)
+
+            # Live status / Download for Ollama
+            if model["engine"] == "Ollama":
+                is_installed = any(m.startswith(model["id"]) for m in self._installed_ollama)
+                if is_installed:
+                    ctk.CTkLabel(
+                        opt_frame, text="✔ Installed",
+                        font=config.FONTS["tiny"], text_color=config.THEME["success"]
+                    ).pack(side="right", padx=8)
+                else:
+                    ctk.CTkButton(
+                        opt_frame, text="⬇ Download",
+                        font=config.FONTS["tiny"], fg_color="transparent",
+                        border_width=1, border_color=config.THEME["warning"],
+                        text_color=config.THEME["warning"], hover_color=config.THEME["bg_card"],
+                        width=60, height=20, corner_radius=4,
+                        command=lambda m=model["id"]: self._download_ollama(m)
+                    ).pack(side="right", padx=8)
+
+    def _download_ollama(self, model_name: str):
+        """Launch a terminal to download the Ollama model."""
+        import subprocess
+        subprocess.Popen(
+            ["cmd.exe", "/c", f"echo Downloading {model_name}... && ollama pull {model_name} && pause"],
+            creationflags=subprocess.CREATE_NEW_CONSOLE
+        )
+        messagebox.showinfo(
+            "Downloading", 
+            f"Started downloading {model_name} in a new terminal window.\n\nPlease wait for it to finish.",
+            parent=self
+        )
+
+    def _build_installer_tab(self, parent):
+        """Build the Model & CUDA Installer tab."""
+        frame = ctk.CTkFrame(parent, fg_color="transparent")
+        frame.pack(fill="both", expand=True, padx=8, pady=8)
+
+        # ─── 1. CUDA / PyTorch Section ───
+        cuda_frame = ctk.CTkFrame(frame, fg_color=config.THEME["bg_card"], corner_radius=10, border_width=1, border_color=config.THEME["border"])
+        cuda_frame.pack(fill="x", pady=(0, 12), padx=4)
+
+        ctk.CTkLabel(cuda_frame, text="⚡ PyTorch & CUDA (GPU) Acceleration", font=config.FONTS["subheading"], text_color=config.THEME["accent"]).pack(anchor="w", padx=12, pady=(8, 2))
+
+        import torch
+        cuda_ok = torch.cuda.is_available()
+        if cuda_ok:
+            device_name = torch.cuda.get_device_name(0)
+            status_text = f"🟢 PyTorch + CUDA OK (Running on GPU: {device_name})"
+            status_color = config.THEME["success"]
+        else:
+            status_text = "🔴 PyTorch is running on CPU only (CUDA not available)"
+            status_color = config.THEME["error"]
+
+        ctk.CTkLabel(cuda_frame, text=status_text, font=config.FONTS["small"], text_color=status_color).pack(anchor="w", padx=12, pady=4)
+
+        # Fix/Reinstall button
+        fix_btn = ctk.CTkButton(
+            cuda_frame, text="Fix CUDA (Install PyTorch with CUDA 12.1)",
+            font=config.FONTS["tiny"], fg_color=config.THEME["accent"],
+            hover_color=config.THEME["accent_hover"],
+            command=self._install_pytorch_cuda
+        )
+        fix_btn.pack(anchor="w", padx=12, pady=(4, 12))
+
+        # ─── 2. Ollama Models Section ───
+        ollama_frame = ctk.CTkFrame(frame, fg_color=config.THEME["bg_card"], corner_radius=10, border_width=1, border_color=config.THEME["border"])
+        ollama_frame.pack(fill="both", expand=True, padx=4)
+
+        ctk.CTkLabel(ollama_frame, text="🦙 Ollama Model Downloader", font=config.FONTS["subheading"], text_color=config.THEME["info"]).pack(anchor="w", padx=12, pady=(8, 2))
+
+        # Show detected models for transparency
+        detected_text = "Detected installed Ollama models: " + (", ".join(self._installed_ollama) if self._installed_ollama else "None")
+        ctk.CTkLabel(ollama_frame, text=detected_text, font=config.FONTS["tiny"], text_color=config.THEME["text_muted"], wraplength=600, justify="left").pack(anchor="w", padx=12, pady=(0, 4))
+
+        # Scrollable list for models
+        model_scroll = ctk.CTkScrollableFrame(ollama_frame, fg_color="transparent", height=200)
+        model_scroll.pack(fill="both", expand=True, padx=8, pady=4)
+
+        # Merge Ollama & Vision catalog models
+        all_downloadable = _MODEL_CATALOG["ollama"] + _MODEL_CATALOG["vision"]
+        for model in all_downloadable:
+            row = ctk.CTkFrame(model_scroll, fg_color=config.THEME["bg_tertiary"], corner_radius=6)
+            row.pack(fill="x", pady=2)
+
+            ctk.CTkLabel(row, text=model["name"], font=config.FONTS["small"], text_color=config.THEME["text_primary"]).pack(side="left", padx=8, pady=4)
+            ctk.CTkLabel(row, text=f"({model['size']})", font=config.FONTS["tiny"], text_color=config.THEME["text_muted"]).pack(side="left", padx=4)
+
+            is_installed = any(m.startswith(model["id"]) for m in self._installed_ollama)
+            if is_installed:
+                ctk.CTkLabel(row, text="✔ Installed", font=config.FONTS["tiny"], text_color=config.THEME["success"]).pack(side="right", padx=12)
+            else:
+                ctk.CTkButton(
+                    row, text="Download", font=config.FONTS["tiny"],
+                    fg_color=config.THEME["warning"], text_color="#000000",
+                    hover_color="#D97706", width=70, height=20, corner_radius=4,
+                    command=lambda m=model["id"]: self._download_ollama(m)
+                ).pack(side="right", padx=12)
+
+        # Custom pull entry
+        custom_frame = ctk.CTkFrame(ollama_frame, fg_color="transparent")
+        custom_frame.pack(fill="x", padx=12, pady=10)
+
+        self.custom_model_var = tk.StringVar()
+        entry = ctk.CTkEntry(
+            custom_frame, placeholder_text="Enter any Ollama model (e.g., llama3, mistral)...",
+            font=config.FONTS["small"], fg_color=config.THEME["bg_input"],
+            border_color=config.THEME["border"], text_color=config.THEME["text_primary"],
+            textvariable=self.custom_model_var, height=28
+        )
+        entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+        ctk.CTkButton(
+            custom_frame, text="Download Custom", font=config.FONTS["tiny"],
+            fg_color=config.THEME["info"], hover_color=config.THEME["accent_hover"],
+            width=120, height=28,
+            command=self._download_custom_ollama
+        ).pack(side="right")
+
+    def _install_pytorch_cuda(self):
+        """Reinstall PyTorch with CUDA 12.1 in a new terminal."""
+        import sys
+        import subprocess
+        py_path = sys.executable
+        # Use cmd.exe /k directly with CREATE_NEW_CONSOLE to prevent instant exit and show errors
+        cmd = f'echo Installing PyTorch with CUDA 12.1 support... && "{py_path}" -m pip install torch --index-url https://download.pytorch.org/whl/cu121 --force-reinstall --no-cache-dir && echo. && echo Finished! Restart FORGE. && pause'
+        subprocess.Popen(
+            ["cmd.exe", "/k", cmd],
+            creationflags=subprocess.CREATE_NEW_CONSOLE
+        )
+        messagebox.showinfo("PyTorch CUDA Installer", "Started PyTorch CUDA installation in a new terminal window.\n\nKeep an eye on it to make sure it completes!")
+
+    def _download_custom_ollama(self):
+        """Download custom model typed in entry."""
+        m = self.custom_model_var.get().strip()
+        if not m:
+            return
+        self._download_ollama(m)
 
     def _save(self):
         """Save selections to user settings."""

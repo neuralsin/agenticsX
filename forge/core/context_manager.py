@@ -215,6 +215,78 @@ class ContextManager:
         finally:
             conn.close()
 
+    def compress_old_context(self, session_id: str, summarizer_func):
+        """
+        Context Sliding Window: 
+        If the message count exceeds a threshold, get the oldest messages, 
+        append them to a text file to prevent data loss, ask the summarizer_func 
+        to compress them, and replace them in the database with the summary.
+        """
+        conn = self._get_conn()
+        try:
+            # Check if we have more than 30 messages (excluding system prompts and previous summaries)
+            count = conn.execute(
+                "SELECT COUNT(*) as cnt FROM messages WHERE session_id = ? AND role != 'system' AND importance != 10",
+                (session_id,)
+            ).fetchone()["cnt"]
+
+            if count <= 30:
+                return False
+
+            # Get the oldest 15 messages
+            old_rows = conn.execute(
+                """SELECT id, agent_name, role, content, timestamp 
+                   FROM messages 
+                   WHERE session_id = ? AND role != 'system' AND importance != 10
+                   ORDER BY timestamp ASC LIMIT 15""",
+                (session_id,)
+            ).fetchall()
+            
+            if not old_rows:
+                return False
+
+            old_messages = [dict(row) for row in old_rows]
+            ids_to_delete = [row["id"] for row in old_messages]
+
+            # 1. Append to text file
+            overflow_path = config.SESSIONS_DIR / f"{session_id}_context_overflow.txt"
+            raw_text_block = "\n".join(
+                f"[{m['agent_name']}] ({m['role']}): {m['content']}" 
+                for m in old_messages
+            )
+            with open(overflow_path, "a", encoding="utf-8") as f:
+                f.write(f"\n--- OVERFLOW EXPORT ---\n{raw_text_block}\n")
+
+            # 2. Compress via LLM
+            prompt = (
+                "Summarize the following past conversation strictly focusing on key decisions, "
+                "established facts, and current goals. Keep it highly compressed (under 200 words):\n\n"
+                f"{raw_text_block}"
+            )
+            summary = summarizer_func(prompt)
+
+            # 3. Delete old messages
+            conn.execute(
+                f"DELETE FROM messages WHERE id IN ({','.join('?' for _ in ids_to_delete)})",
+                ids_to_delete
+            )
+
+            # 4. Insert summary as a high-importance system message
+            conn.execute(
+                """INSERT INTO messages 
+                   (session_id, agent_name, role, content, token_count, timestamp, importance)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (session_id, "SYSTEM", "system", f"[PREVIOUS CONTEXT SUMMARY]\n{summary}", 
+                 count_tokens(summary), time.time(), 10)  # Importance 10 ensures it stays
+            )
+            conn.commit()
+            return True
+        except Exception as e:
+            print(f"[CONTEXT COMPRESSION ERROR] {e}")
+            return False
+        finally:
+            conn.close()
+
     # ─── Smart Context Retrieval ─────────────────────────────────────────────────
 
     def get_agent_context(self, agent_name: str, session_id: str,

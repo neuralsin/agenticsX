@@ -32,7 +32,10 @@ class OllamaAgent(BaseAgent):
                     "top_p": 0.9,
                 }
             )
-            return response["message"]["content"]
+            # Handle both new SDK object and old dict response formats
+            if isinstance(response, dict):
+                return response["message"]["content"]
+            return response.message.content
 
         except ImportError:
             return (
@@ -74,7 +77,9 @@ class OllamaAgent(BaseAgent):
                     "num_predict": 1024,
                 }
             )
-            return response["message"]["content"]
+            if isinstance(response, dict):
+                return response["message"]["content"]
+            return response.message.content
 
         except ImportError:
             return "[OLLAMA NOT INSTALLED] pip install ollama"
@@ -102,7 +107,9 @@ class OllamaAgent(BaseAgent):
                     "num_predict": 1024,
                 }
             )
-            return response["message"]["content"]
+            if isinstance(response, dict):
+                return response["message"]["content"]
+            return response.message.content
 
         except ImportError:
             return "[OLLAMA NOT INSTALLED] pip install ollama"
@@ -132,8 +139,9 @@ class OllamaAgent(BaseAgent):
         """Check if Ollama is running and accessible."""
         try:
             import ollama
-            models = ollama.list()
-            model_count = len(models.get("models", []))
+            response = ollama.list()
+            models = response.get("models", []) if isinstance(response, dict) else getattr(response, "models", [])
+            model_count = len(models)
             return True, f"Ollama running — {model_count} models available"
         except ImportError:
             return False, "ollama package not installed. Run: pip install ollama"
@@ -144,14 +152,34 @@ class OllamaAgent(BaseAgent):
             return False, f"Ollama error: {str(e)}"
 
     @staticmethod
+    def _extract_model_names(response) -> list[str]:
+        """Extract model name strings from any ollama.list() response format."""
+        names = []
+        # New SDK returns ListResponse object with .models attribute
+        models_list = getattr(response, "models", None)
+        if models_list is None and isinstance(response, dict):
+            models_list = response.get("models", [])
+        if not models_list:
+            return names
+        for m in models_list:
+            # New SDK: Model object with .model attribute (e.g., "qwen3.6:27b")
+            name = getattr(m, "model", None) or getattr(m, "name", None)
+            if not name and isinstance(m, dict):
+                name = m.get("model", "") or m.get("name", "")
+            if name:
+                names.append(name)
+        return names
+
+    @staticmethod
     def check_model_available(model_name: str) -> tuple[bool, str]:
         """Check if a specific model is available in Ollama."""
         try:
             import ollama
-            models = ollama.list()
-            model_names = [m.get("name", "") for m in models.get("models", [])]
-            if any(model_name in name for name in model_names):
-                return True, f"Model '{model_name}' available"
+            response = ollama.list()
+            model_names = OllamaAgent._extract_model_names(response)
+            # Match on prefix so "qwen3.6:27b" matches "qwen3.6:27b" exactly
+            if any(model_name in name or name in model_name for name in model_names):
+                return True, f"Model '{model_name}' available ✓"
             return False, (
                 f"Model '{model_name}' not found. "
                 f"Run: ollama pull {model_name}"
@@ -159,18 +187,14 @@ class OllamaAgent(BaseAgent):
         except ImportError:
             return False, "ollama package not installed"
         except Exception as e:
-            return False, f"Check failed: {str(e)}"
+            return False, f"Ollama error: {str(e)}"
 
     @staticmethod
     def list_available_models() -> list[str]:
         """List all available Ollama models."""
         try:
             import ollama
-            models = ollama.list()
-            return [
-                m.get("name", "") or m.get("model", "")
-                for m in models.get("models", [])
-            ]
+            response = ollama.list()
+            return OllamaAgent._extract_model_names(response)
         except Exception:
             return []
-

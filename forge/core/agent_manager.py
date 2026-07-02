@@ -190,6 +190,10 @@ class AgentManager:
                 self._emit("on_iteration_start", self.iteration)
                 self._emit_stats()
 
+                # ── Context Compression Check ────────────────────────────
+                if self.ctx.compress_old_context(self.session_id, lambda p: self._agent_call(self.planner, p)):
+                    self._emit("on_message", "SYSTEM", "Context compressed and old messages saved to overflow txt file.", "system")
+
                 # ── User steering check ──────────────────────────────────
                 steering = self.ctx.get_pending_steering(self.session_id)
                 if steering:

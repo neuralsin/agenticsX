@@ -119,10 +119,30 @@ IF EXIST "%FORGE_DIR%\.env" (
 :: ── 4b. Kill any stale FORGE process on port 47392 ───────────────────────────
 ECHO [..] Checking for stale FORGE instances...
 FOR /F "tokens=5" %%p IN ('netstat -ano ^| findstr ":47392 " 2^>nul') DO (
-    IF NOT "%%p"=="0" (
+    if NOT "%%p"=="0" (
         ECHO [!!] Killing stale FORGE process PID %%p
         taskkill /F /PID %%p >nul 2>&1
     )
+)
+timeout /t 1 /nobreak >nul
+
+:: ── 4c. Ensure Ollama is running ──────────────────────────────────────────────
+ECHO [..] Checking if Ollama is running...
+curl -s http://127.0.0.1:11434/ >nul 2>&1
+IF %ERRORLEVEL% NEQ 0 (
+    ECHO [!!] Ollama is not running. Starting Ollama in the background...
+    start "" /B ollama serve >nul 2>&1
+    :: Give it 3 seconds to spin up
+    timeout /t 3 /nobreak >nul
+    curl -s http://127.0.0.1:11434/ >nul 2>&1
+    IF !ERRORLEVEL! NEQ 0 (
+        ECHO [WARNING] Could not start Ollama automatically. 
+        ECHO           Please make sure Ollama is installed and running.
+    ) ELSE (
+        ECHO [OK] Ollama started successfully.
+    )
+) ELSE (
+    ECHO [OK] Ollama is running.
 )
 timeout /t 1 /nobreak >nul
 

@@ -42,7 +42,7 @@ class ChatMessage(ctk.CTkFrame):
         
         # Content area
         content_area = ctk.CTkFrame(inner, fg_color="transparent")
-        content_area.pack(fill="both", expand=True, padx=(0, 8), pady=6)
+        content_area.pack(fill="both", expand=True, padx=(0, 12), pady=10)
         
         # Header: [AGENT_NAME] timestamp
         header = ctk.CTkFrame(content_area, fg_color="transparent")
@@ -103,13 +103,13 @@ class ChatMessage(ctk.CTkFrame):
         # Content text
         self.content_label = ctk.CTkLabel(
             content_area, text=content,
-            font=config.FONTS["small"] if not is_code else config.FONTS["mono_small"],
+            font=config.FONTS["body"] if not is_code else config.FONTS["mono"],
             text_color=config.THEME["text_primary"],
             anchor="w",
             justify="left",
-            wraplength=500,
+            wraplength=750,
         )
-        self.content_label.pack(fill="x", pady=(4, 0))
+        self.content_label.pack(fill="x", pady=(8, 4))
 
     def update_content(self, new_content: str):
         """Update message content (for streaming)."""
@@ -244,7 +244,7 @@ class ChatHubPanel(ctk.CTkFrame):
         msg_widget = ChatMessage(
             self.messages_container, agent_name, content, role,
         )
-        msg_widget.pack(fill="x", padx=6, pady=3)
+        msg_widget.pack(fill="x", padx=12, pady=6)
         
         self.messages.append({
             "agent": agent_name, "content": content,

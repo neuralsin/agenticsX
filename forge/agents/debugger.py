@@ -1,13 +1,13 @@
 """
-DEBUGGER — DeepSeek-R1 8B via Ollama  
+DEBUGGER — Qwen3.6 27B via AirLLM (layer-sliced, fits 6GB VRAM)
 Role: Receives stderr/stdout + the code that caused it.
-      Uses R1's chain-of-thought to trace the error root cause.
+      Uses chain-of-thought reasoning to trace the error root cause.
       Outputs a specific fix instruction for CODER.
       Can also do static analysis (no execution needed).
 """
 
 import re
-from agents.ollama_agent import OllamaAgent
+from agents.airllm_agent import AirLLMAgent
 import config
 
 
@@ -37,16 +37,15 @@ CODER_TASK: [copy-pasteable task description for CODER agent]
 """
 
 
-class DebuggerAgent(OllamaAgent):
+class DebuggerAgent(AirLLMAgent):
     """
     DEBUGGER agent — diagnoses bugs and generates fix instructions.
-    Uses DeepSeek-R1 8B for fast chain-of-thought reasoning.
+    Uses Qwen3.6 27B via AirLLM (layer-sliced, 6GB VRAM safe).
     """
 
     name = "DEBUGGER"
 
     color = config.AGENT_COLORS["DEBUGGER"]
-    ollama_model = config.OLLAMA_DEBUGGER_MODEL
 
     def __init__(self, context_manager, session_id):
         super().__init__(context_manager, session_id)
